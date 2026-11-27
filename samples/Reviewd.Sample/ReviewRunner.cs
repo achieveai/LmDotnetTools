@@ -758,7 +758,7 @@ internal static class ReviewRunner
             throw new ArgumentException(mismatch);
         }
         // A finished review is posted (a shadow one recorded in would_post.json), verified and archived on the head it
-        // reviewed, even after a new push.
+        // reviewed, even after a new push or closure.
         var finishedResume = resume && !cleanupOnly && ReviewFinished(attempt);
         if (
             !cleanupOnly
@@ -1140,6 +1140,8 @@ internal static class ReviewRunner
             throw new ReviewDeferredException("An earlier conversation for this PR is still running; retry deferred.");
         }
 
+        var currentLifecycle = current["Lifecycle"]?.GetValue<string>();
+        var closedFinishedResume = finishedResume && currentLifecycle is "Merged" or "Abandoned";
         if (
             resume
             && !cleanupResume
@@ -1153,8 +1155,10 @@ internal static class ReviewRunner
                 || attempt["threadId"]?.GetValue<string>() != thread
                 || thread is null
                 || (!finishedResume && attempt["headSha"]?.GetValue<string>() != current["HeadSha"]?.GetValue<string>())
-                || current["Lifecycle"]?.GetValue<string>() != "Open"
-                || current["IsDraft"]?.GetValue<bool>() != false
+                || (
+                    !closedFinishedResume
+                    && (currentLifecycle != "Open" || current["IsDraft"]?.GetValue<bool>() != false)
+                )
                 || attempt["reviewInputId"]?.GetValue<string>() is not { Length: > 0 }
             )
         )
@@ -1550,6 +1554,16 @@ internal static class ReviewRunner
             var publishing = github
                 ? $"Publish to GitHub through the sandbox egress proxy, an approved route and not a bypass: python3 /marketplaces/sandbox-plugins/sandbox-auth/scripts/sandbox-auth-fetch.py --url https://api.github.com/repos/{repo.OrgOrOwner}/{repo.RepoName}/... --method POST --header Content-Type:application/json --header Accept:application/vnd.github+json --data-file <body.json>. Post the summary as a PR conversation comment (issues/{pr}/comments, commentType issue_comment); post inline findings as a review (pulls/{pr}/reviews with event COMMENT and commit_id {args["head"]}) and record the review (commentType review) and each of its inline comments (commentType review_comment, ids from pulls/{pr}/reviews/<id>/comments); reply to an existing inline thread with pulls/{pr}/comments/<id>/replies (commentType review_comment). Never approve or request changes. The proxy adds credentials; never send an Authorization header. Give any publisher sub-agent Bash and Read."
                 : "Without Azure DevOps MCP tools, publish through the sandbox egress proxy, an approved route and not a bypass: python3 /marketplaces/sandbox-plugins/sandbox-auth/scripts/sandbox-auth-fetch.py --url <ADO REST URL> --method POST --header Content-Type:application/json --data-file <body.json>. The proxy adds credentials; never send an Authorization header. Give any publisher sub-agent Bash and Read.";
+            var closedSummaryRoute = github
+                ? $"POST issues/{pr}/comments (commentType issue_comment)"
+                : "Create a new PR thread without file or iteration context";
+            var closedPublication = $"""
+                If the PR has merged or closed, fold all inline findings and replies into one PR conversation summary.
+                Keep the verdict, evidence, and file and line references as text. Include "Reviewed commit {revision}" in
+                the body so the summary names the exact revision reviewed. {closedSummaryRoute}. Record it as kind summary.
+                This closure rule takes precedence over the inline and short-SHA guidance. If the PR closes while posting,
+                keep successful posts and include any findings that did not land in the summary.
+                """;
             var reReviewPreamble =
                 retryOfReset
                     ? $"""
@@ -1588,7 +1602,8 @@ internal static class ReviewRunner
                 {ReviewQualityRules}
                 {publishing}
                 If a publisher sub-agent or skill declines to post (for example because it expects a different input format), post the same text yourself with the route above. Never end the run to ask which publisher to use.
-                Immediately before publication, verify the PR is still active and non-draft; stop if it was closed, abandoned or made a draft. If the target branch moved or the PR got a new push since setup, still post your findings on the head you reviewed, {args[
+                Immediately before publication, check the PR state. {closedPublication}
+                If the PR is still open but has become a draft, stop. On an open PR post the summary after the inline feedback. If the target branch moved or the PR got a new push since setup, still post your findings on the head you reviewed, {args[
                     "head"
                 ]}: on GitHub use it as commit_id; on Azure DevOps anchor inline threads to the iteration whose source commit is {args[
                     "head"
@@ -1632,7 +1647,7 @@ internal static class ReviewRunner
                     receipt["stage"] = "review-completed";
                 }
             }
-            // From here the review is finished: a moved target branch or a new push no longer stops it.
+            // From here the review is finished: a moved target branch, new push or closed PR no longer stops it.
             args["reviewFinished"] = true;
             receipt["reviewCompletedAt"] ??= JsonValue.Create(DateTimeOffset.UtcNow);
             await SaveAsync();
@@ -1672,7 +1687,14 @@ internal static class ReviewRunner
                     "confirmation",
                     shadow
                         ? ShadowConfirmationPrompt(directory)
-                        : "Can you confirm if the PR feedback and replies to any discussion where you could add value have been posted. Audit and report existing publication receipts; do not post duplicates. Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval. If this review verified a medium or high issue, or a failing required check this PR caused, that the summary you posted does not list as a blocker, reply in that summary thread now (on GitHub, a new PR comment): first \"REQUEST_CHANGES (replaces the verdict above)\", then each such blocker in one short line; record the reply in publication_receipts.json. Waiting for reviewer votes, approvals or policies is not such a blocker. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line."
+                        : $"""
+                        Confirm whether the PR feedback and replies have been posted. Audit the existing receipts and do not post duplicates.
+                        If the PR is closed and this review has no posted summary, recover its decided findings from this conversation and post them through the publication route already given. {closedPublication}
+                        If this review already posted its summary using the closed-PR rule above, confirm the summary without posting a second comment. Record every successful post from this review in publication_receipts.json.
+                        Report your final verdict on the PR, with a brief rationale and any unresolved blockers. If the review is incomplete or blocked, state that explicitly rather than inferring approval.
+                        For an ordinary summary posted while the PR was open: If this review verified a medium or high issue, or a failing required check this PR caused, that the summary you posted does not list as a blocker, reply in that summary thread now (on GitHub, a new PR comment): first "REQUEST_CHANGES (replaces the verdict above)", then each such blocker in one short line; record the reply in publication_receipts.json.
+                        Waiting for reviewer votes, approvals or policies is not such a blocker. You MUST return a non-empty final text response. End your response with a standalone line in exactly this format: verdict: <APPROVE | APPROVE_WITH_COMMENTS | REQUEST_CHANGES | BLOCKED | INCOMPLETE>. Choose exactly one value, do not leave the placeholder, and put nothing after this verdict line.
+                        """
                 );
             }
             // Only verify reads the summary threads, and a re-verify can find more (the lost round's own, on ADO), so

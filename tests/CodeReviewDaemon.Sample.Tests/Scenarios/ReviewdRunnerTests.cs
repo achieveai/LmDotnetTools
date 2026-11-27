@@ -2,6 +2,7 @@ extern alias Reviewd;
 
 using System.Globalization;
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using AchieveAi.LmDotnetTools.Misc.Storage;
 using AchieveAi.LmDotnetTools.Sandbox;
@@ -2468,8 +2469,11 @@ public sealed class ReviewdRunnerTests
     [Theory]
     [InlineData("review-completed", "merge", "verified")]
     [InlineData("review-completed", "head", "verified")]
+    [InlineData("review-completed", "completed", "verified")]
+    [InlineData("review-completed", "abandoned", "verified")]
     [InlineData("verify-pending", "head", "verified")]
     [InlineData("review-running", "head", "held")]
+    [InlineData("review-running", "completed", "closed-held")]
     public async Task Batch_finishes_a_finished_review_on_what_it_reviewed_after_the_pr_moved(
         string stage,
         string moved,
@@ -2499,6 +2503,12 @@ public sealed class ReviewdRunnerTests
             if (moved == "head")
             {
                 live["headSha"] = new string('d', 40);
+            }
+            else if (moved is "completed" or "abandoned")
+            {
+                live["status"] = moved;
+                live["headSha"] = new string('d', 40);
+                live["mergeSha"] = null;
             }
 
             return live;
@@ -7388,16 +7398,59 @@ public sealed class ReviewdRunnerTests
     [Theory]
     [InlineData("fresh")]
     [InlineData("resume")]
-    public async Task Runner_finishes_a_finished_review_on_the_revision_it_reviewed(string path)
+    [InlineData("resume-merged")]
+    public Task Runner_finishes_a_finished_review_on_the_revision_it_reviewed(string path) =>
+        RunFinishedReviewScenarioAsync(path);
+
+    [SkippableFact]
+    public async Task Runner_posts_one_summary_after_merge_and_releases_the_slot_in_the_same_run()
+    {
+        var python = await ReviewdSummaryReplyTests.FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's publication check cannot be run");
+        await RunFinishedReviewScenarioAsync("merged", python);
+    }
+
+    private static async Task RunFinishedReviewScenarioAsync(string path, string? python = null)
     {
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-finished-{Guid.NewGuid():N}.db");
-        var repo = PrCommands.ParseRepo("org/project/Nova");
+        var mergesDuringPublication = path == "merged";
+        var repo = PrCommands.ParseRepo(mergesDuringPublication ? "org/Nova" : "org/project/Nova");
         var reviewed = new string('a', 40);
         var prepared = new string('b', 40);
         var (liveHead, liveMerge) = (reviewed, prepared);
+        var liveStatus = "active";
         var sends = 0;
-        var failConfirmationInspect = path == "resume";
+        var resume = path is "resume" or "resume-merged";
+        var failConfirmationInspect = resume;
         var steps = new List<string>();
+        const string finding = "src/Queue.cs:17: Failed jobs keep a slot.";
+        const string summaryRoute = "issues/17/comments";
+        JsonObject? postedComment = null;
+        JsonObject? publicationReceipt = null;
+        var provider = new FakeHttpMessageHandler()
+            .On(
+                request => request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath == "/pulls/17",
+                _ => Json("""{"state":"closed","merged":true}""")
+            )
+            .OnAsync(
+                request => request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/" + summaryRoute,
+                async request =>
+                {
+                    liveStatus.Should().Be("completed");
+                    postedComment = new JsonObject
+                    {
+                        ["id"] = 5,
+                        ["issue_url"] = "https://api.github.test/repos/org/Nova/issues/17",
+                        ["body"] = (await request.Content!.ReadFromJsonAsync<JsonObject>())!["body"]!.DeepClone(),
+                    };
+                    return Json(postedComment.ToJsonString());
+                }
+            )
+            .On(
+                request => request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath == "/issues/comments/5",
+                _ => Json(postedComment!.ToJsonString())
+            );
+        using var github = new HttpClient(provider) { BaseAddress = new Uri("https://api.github.test/") };
         var handler = new FakeHttpMessageHandler()
             .OnJson(
                 HttpMethod.Get,
@@ -7415,14 +7468,54 @@ public sealed class ReviewdRunnerTests
                 "/api/conversations?",
                 """[{"threadId":"thread","workspace":"workspace","provider":"test","mode":"workspace-agent","clientToolsDisabled":true}]"""
             )
-            .On(
+            .OnAsync(
                 request => request.RequestUri!.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal),
-                _ =>
+                async request =>
                 {
                     // In "fresh", the target branch moves while the review runs.
                     if (++sends == 1 && path == "fresh")
                     {
                         liveMerge = new string('e', 40);
+                    }
+                    if (sends == 1 && mergesDuringPublication)
+                    {
+                        // The hosted publisher has decided on the finding. The PR merges just before it posts.
+                        liveStatus = "completed";
+                        (liveHead, liveMerge) = (new string('d', 40), "");
+                        var prompt = JsonNode.Parse(await request.Content!.ReadAsStringAsync())![
+                            "text"
+                        ]!.GetValue<string>();
+                        prompt
+                            .Should()
+                            .Contain("If the PR has merged or closed")
+                            .And.Contain("fold all inline findings and replies into one PR conversation summary")
+                            .And.Contain(summaryRoute)
+                            .And.Contain($"Reviewed commit {reviewed}")
+                            .And.NotContain("stop if it was closed");
+                        var pull = (await github.GetFromJsonAsync<JsonObject>("pulls/17"))!;
+                        pull["merged"]!.GetValue<bool>().Should().BeTrue();
+                        var body = $"REQUEST_CHANGES\n\nReviewed commit {reviewed}\n\n- {finding}";
+                        using var post = await github.PostAsJsonAsync(summaryRoute, new { body });
+                        post.EnsureSuccessStatusCode();
+                        var comment = (await post.Content.ReadFromJsonAsync<JsonObject>())!;
+                        publicationReceipt = new JsonObject
+                        {
+                            ["commentType"] = "issue_comment",
+                            ["commentId"] = comment["id"]!.DeepClone(),
+                            ["kind"] = "summary",
+                            ["content"] = body,
+                        };
+                    }
+                    else if (sends == 2 && mergesDuringPublication)
+                    {
+                        var prompt = JsonNode.Parse(await request.Content!.ReadAsStringAsync())![
+                            "text"
+                        ]!.GetValue<string>();
+                        prompt
+                            .Should()
+                            .Contain("recover its decided findings from this conversation")
+                            .And.Contain("confirm the summary without posting a second comment")
+                            .And.Contain($"Reviewed commit {reviewed}");
                     }
 
                     return Json($$"""{"inputId":"input{{sends}}","idempotencyKeyHonored":true}""");
@@ -7473,7 +7566,7 @@ public sealed class ReviewdRunnerTests
                     CancellationToken.None,
                     _ => Task.CompletedTask
                 );
-            if (path == "fresh")
+            if (!resume)
             {
                 await run();
                 // The agent posts inside its review turn, so the prompt carries the same rule: a moved target branch
@@ -7485,7 +7578,7 @@ public sealed class ReviewdRunnerTests
                 )!["text"]!.GetValue<string>();
                 prompt
                     .Should()
-                    .Contain("stop if it was closed, abandoned or made a draft")
+                    .Contain("If the PR is still open but has become a draft, stop")
                     .And.Contain(
                         $"still post your findings on the head you reviewed, {reviewed}: on GitHub use it as commit_id"
                     )
@@ -7502,7 +7595,7 @@ public sealed class ReviewdRunnerTests
                 stopped["stage"]!.GetValue<string>().Should().Be("review-completed");
                 // A new push lands: the PR's head and merge both move, and the saved snapshot sees the new head.
                 (liveHead, liveMerge) = (new string('d', 40), new string('e', 40));
-                await SnapshotAsync(liveHead);
+                await SnapshotAsync(liveHead, path == "resume-merged" ? "Merged" : "Open");
                 steps.Clear();
                 await ReviewRunner.RunAsync(
                     Options("--resume"),
@@ -7518,12 +7611,28 @@ public sealed class ReviewdRunnerTests
             finished["stage"]!.GetValue<string>().Should().Be("completed-verified");
             finished["reviewedHeadSha"]!.GetValue<string>().Should().Be(reviewed);
             finished["mergeSha"]!.GetValue<string>().Should().Be(prepared);
-            var finishing =
-                path == "fresh"
-                    ? new[] { "inspect", "verify", "commit" }
-                    : ["inspect-prepared", "inspect", "verify", "commit"];
+            if (mergesDuringPublication)
+            {
+                var post = provider
+                    .Requests.Where(request => request.Method == HttpMethod.Post)
+                    .Should()
+                    .ContainSingle()
+                    .Which;
+                post.Uri.AbsolutePath.Should().Be("/" + summaryRoute);
+                JsonNode.Parse(post.Body!)!["body"]!.GetValue<string>().Should().Contain(reviewed).And.Contain(finding);
+                steps.TakeLast(3).Select(step => step.Split(' ')[0]).Should().Equal("verify", "commit", "cleanup");
+                var attempt = (await store.GetAsync<JsonObject>($"reviewd/review-attempt/{repo.NormalizedKey}/17"))!;
+                attempt["cleanupState"]!.GetValue<string>().Should().Be("released");
+                var owner = (
+                    await store.GetAsync<JsonObject>(SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 2))
+                )!;
+                owner["state"]!.GetValue<string>().Should().Be("released");
+            }
+            var finishing = !resume
+                ? new[] { "inspect", "verify", "commit" }
+                : ["inspect-prepared", "inspect", "verify", "commit"];
             var expected = finishing.Select(phase => $"{phase} {reviewed} {prepared} finished").ToList();
-            if (path == "fresh")
+            if (!resume)
             {
                 expected.InsertRange(0, ["prepare " + reviewed, $"inspect {reviewed} {prepared} reviewing"]);
             }
@@ -7553,7 +7662,7 @@ public sealed class ReviewdRunnerTests
             File.Delete(database + ".review-lock");
         }
 
-        async Task SnapshotAsync(string head)
+        async Task SnapshotAsync(string head, string lifecycle = "Open")
         {
             using var connection = PrThreadBindings.Connection(database);
             await new SqliteKvStore(connection).SetAsync(
@@ -7562,7 +7671,7 @@ public sealed class ReviewdRunnerTests
                 {
                     ["17"] = new JsonObject
                     {
-                        ["Lifecycle"] = "Open",
+                        ["Lifecycle"] = lifecycle,
                         ["IsDraft"] = false,
                         ["HeadSha"] = head,
                     },
@@ -7570,7 +7679,7 @@ public sealed class ReviewdRunnerTests
             );
         }
 
-        Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken ct)
+        async Task<JsonObject> Sandbox(string phase, JsonObject args, string operation, CancellationToken ct)
         {
             var finished = args["reviewFinished"]?.GetValue<bool>() == true;
             steps.Add(
@@ -7585,11 +7694,53 @@ public sealed class ReviewdRunnerTests
                     throw new InvalidOperationException("PR source or prepared merge changed; no submission allowed.");
                 }
 
+                if (mergesDuringPublication)
+                {
+                    var mergedCase = new JsonObject
+                    {
+                        ["args"] = args.DeepClone(),
+                        ["current"] = new JsonObject
+                        {
+                            ["status"] = liveStatus,
+                            ["isDraft"] = false,
+                            ["headSha"] = liveHead,
+                            ["mergeSha"] = liveMerge,
+                        },
+                    };
+                    var accepted = await ReviewdSummaryReplyTests.RunAsync(
+                        python!,
+                        ["live_merge"],
+                        "passes(lambda: live_merge(c['current'], c['args'])) and live_merge(c['current'], c['args']) == c['args']['merge']",
+                        new JsonArray(mergedCase).ToJsonString()
+                    );
+                    accepted.Should().Equal(true);
+                }
+
                 if (phase == "inspect" && sends == 1 && failConfirmationInspect)
                 {
                     failConfirmationInspect = false;
                     throw new InvalidOperationException("gateway hiccup");
                 }
+            }
+
+            if (phase == "verify" && mergesDuringPublication)
+            {
+                var comment = publicationReceipt!;
+                var route = $"issues/comments/{comment["commentId"]}";
+                var readBack = await github.GetFromJsonAsync<JsonObject>(route, ct);
+                var publication = new JsonObject
+                {
+                    ["comments"] = new JsonArray(comment.DeepClone()),
+                    ["live"] = new JsonObject { [route] = readBack },
+                };
+                var verified = await ReviewdSummaryReplyTests.RunAsync(
+                    python!,
+                    ["GITHUB_COMMENTS", "github_belongs", "github_reply_wrapper", "same_text", "github_verify"],
+                    "passes(lambda: github_verify(c['comments'], c['live'].get, []))",
+                    new JsonArray(publication).ToJsonString()
+                );
+                verified.Should().Equal(true);
+                return new JsonObject { ["comments"] = new JsonArray(comment) };
             }
             var json = phase switch
             {
@@ -7605,13 +7756,13 @@ public sealed class ReviewdRunnerTests
                 }.ToJsonString(),
                 _ => "{}",
             };
-            return Task.FromResult(JsonNode.Parse(json)!.AsObject());
+            return JsonNode.Parse(json)!.AsObject();
         }
     }
 
     // The sandbox's side of that contract, run from the embedded script: a step marked reviewFinished stays on the
-    // prepared merge whatever the live head or merge is, and still refuses a closed or draft PR; any other step refuses a
-    // moved head or merge as before. live_merge reads only the provider-neutral state, so GitHub and ADO share it.
+    // prepared merge after a move or closure. Admission still requires an active non-draft PR on the prepared revision.
+    // live_merge reads only the provider-neutral state, so GitHub and ADO share it.
     [SkippableFact]
     public async Task Sandbox_keeps_a_finished_review_on_its_prepared_merge_and_refuses_moves_before_then()
     {
@@ -7642,6 +7793,10 @@ public sealed class ReviewdRunnerTests
             Case(true, Sha('a'), Sha('e')),
             Case(true, Sha('d'), Sha('e')),
             Case(true, Sha('d'), "", "completed"),
+            Case(true, Sha('d'), "", "abandoned", draft: true),
+            Case(false, Sha('a'), Sha('b'), "completed"),
+            Case(false, Sha('a'), Sha('b'), "abandoned"),
+            Case(true, Sha('a'), "", "unknown"),
             Case(true, Sha('d'), Sha('e'), draft: true)
         );
 
@@ -7653,7 +7808,7 @@ public sealed class ReviewdRunnerTests
             cases.ToJsonString()
         );
 
-        results.Should().Equal(true, false, false, true, true, false, false);
+        results.Should().Equal(true, false, false, true, true, true, true, false, false, false, false);
     }
 
     // A conversation provisioned before DisableClientTools still has AskUserQuestion, and a question there

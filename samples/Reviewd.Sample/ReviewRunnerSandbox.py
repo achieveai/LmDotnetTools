@@ -239,10 +239,13 @@ def eligibility():
 def live_merge(current, args):
     # The merge this step works on. A finished review (the runner sets reviewFinished once the review turn is over)
     # stays pinned to the head and merge it reviewed: a target branch that moved, or a new push, does not stop its
-    # confirmation, verify or archive (Kay9: post the findings on the update reviewed; a new head is reviewed afresh).
-    if current['status'] != 'active' or current['isDraft'] is not False:
+    # confirmation, verify or archive. A closed PR can still receive a conversation summary for that revision.
+    finished = args.get('reviewFinished')
+    open_for_review = current['status'] == 'active' and current['isDraft'] is False
+    closed_after_review = finished and current['status'] in ('completed', 'abandoned')
+    if not (open_for_review or closed_after_review):
         raise ReviewError('PR is not active/non-draft in the requested repository.')
-    if args.get('reviewFinished'):
+    if finished:
         merge = args.get('merge')
         if not isinstance(merge, str) or len(merge) != 40:
             raise ReviewError('A finished review has no prepared merge to stay on.')
