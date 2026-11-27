@@ -67,7 +67,12 @@ public record Usage
         return this with
         {
             InputTokenDetails =
-                cachedTokens > 0 ? new InputTokenDetails { CachedTokens = cachedTokens } : InputTokenDetails,
+                cachedTokens > 0
+                    ? (InputTokenDetails ?? new InputTokenDetails()) with
+                    {
+                        CachedTokens = cachedTokens,
+                    }
+                    : InputTokenDetails,
             OutputTokenDetails =
                 reasoningTokens > 0 ? new OutputTokenDetails { ReasoningTokens = reasoningTokens } : OutputTokenDetails,
         };
@@ -137,6 +142,20 @@ public record InputTokenDetails
     [JsonPropertyName("cached_tokens")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int CachedTokens { get; init; }
+
+    /// <summary>
+    ///     Responses cache writes already included in <see cref="Usage.PromptTokens" />. Null when unobserved.
+    /// </summary>
+    [JsonPropertyName("responses_cache_write_tokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? ResponsesCacheWriteTokens { get; init; }
+
+    /// <summary>
+    ///     The 12-hour share of Responses cache writes. Null when the provider does not supply a valid TTL split.
+    /// </summary>
+    [JsonPropertyName("responses_cache_write_12h_tokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? ResponsesCacheWrite12hTokens { get; init; }
 }
 
 /// <summary>

@@ -531,11 +531,11 @@ If nothing passes the gate, return empty lists and say why in judgment.md.
   lessons to challenge); each follow-up replays its whole context. Record its scores beside yours; do not
   overwrite one with the other.
 - If you dispatch neither, set `independence` to `"single judge agent, no blind sub-judge"`.
-- Model: every sub-agent runs on your own model. Spawn each one with `modelIntelligence: 4` (3 is also allowed)
-  and no `model`; on this host tiers 3 and 4 are the default judge model, gpt-6.1-sol. Never pass 5 or higher:
-  it is never above your own tier, and tier 5 is a pricier model (one v6 run paid $2.77 for its two sub-agents
-  instead of about $0.40). Never pass 2 or lower either: those tiers are other models. The verifier and the blind
-  scorecard must run on your model, so their verdicts and scores compare with yours.
+- When the run disables blind delegation, do not call the Agent tool. Use the single-judge independence label.
+- Model: the shipped tiers 3 and 4 use the default judge model, gpt-6.2-sol. Delegate only if the run allows it
+  and the Agent tool advertises your exact model. Request that ID as `model` without `modelIntelligence`. The
+  host's routing policy can override the request, so Reviewd checks the effective delegate models before it
+  accepts the judgment. If the model is unavailable, complete the judgment alone.
 
 ## 10. Outputs
 

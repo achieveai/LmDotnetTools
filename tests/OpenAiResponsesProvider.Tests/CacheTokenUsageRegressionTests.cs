@@ -1,5 +1,7 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using AchieveAi.LmDotnetTools.LmCore.Messages;
+using AchieveAi.LmDotnetTools.LmCore.Models;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Agents;
 using AchieveAi.LmDotnetTools.OpenAiResponsesProvider.Models;
 using FluentAssertions;
@@ -71,6 +73,149 @@ public sealed class CacheTokenUsageRegressionTests
             .Usage.TotalReasoningTokens.Should()
             .Be(64, "the Responses API reported 64 reasoning tokens in output_tokens_details.reasoning_tokens");
     }
+
+    [Theory]
+    [InlineData(
+        """{ "cached_tokens": 0, "cache_write_tokens": 1975, "cache_write_tokens_details": { "ttl_30m_tokens": 1975, "ttl_12h_tokens": 0 } }""",
+        0,
+        1975L,
+        0L
+    )]
+    [InlineData("""{ "cached_tokens": 1975, "cache_write_tokens": 0 }""", 1975, 0L, 0L)]
+    [InlineData(
+        """{ "cached_tokens": 1975, "cache_write_tokens": 0, "cache_write_tokens_details": { "ttl_30m_tokens": 0, "ttl_12h_tokens": 0 } }""",
+        1975,
+        0L,
+        0L
+    )]
+    [InlineData(
+        """{ "cached_tokens": 1975, "cache_write_tokens": 0, "cache_write_tokens_details": { "ttl_30m_tokens": 0, "ttl_12h_tokens": 1 } }""",
+        1975,
+        null,
+        null
+    )]
+    [InlineData(
+        """{ "cached_tokens": 1975, "cache_write_tokens": 0, "cache_write_tokens_details": null }""",
+        1975,
+        null,
+        null
+    )]
+    [InlineData("""{ "cached_tokens": 1975 }""", 1975, null, null)]
+    [InlineData("""{ "cached_tokens": -1, "cache_write_tokens": 0 }""", 0, null, null)]
+    [InlineData("""{ "cache_write_tokens": 100 }""", 0, null, null)]
+    [InlineData("""{ "cached_tokens": 1975, "cache_write_tokens": 4 }""", 1975, null, null)]
+    [InlineData("""{ "cached_tokens": 0, "cache_write_tokens": -1 }""", 0, null, null)]
+    [InlineData("""{ "cached_tokens": 0, "cache_write_tokens": "1975" }""", 0, null, null)]
+    [InlineData(
+        """{ "cached_tokens": 0, "cache_write_tokens": 1975, "cache_write_tokens_details": { "ttl_30m_tokens": 1000, "ttl_12h_tokens": 975 } }""",
+        0,
+        1975L,
+        975L
+    )]
+    [InlineData(
+        """{ "cached_tokens": 0, "cache_write_tokens": 1975, "cache_write_tokens_details": { "ttl_30m_tokens": 1975 } }""",
+        0,
+        1975L,
+        null
+    )]
+    [InlineData(
+        """{ "cached_tokens": 0, "cache_write_tokens": 1975, "cache_write_tokens_details": { "ttl_30m_tokens": 1976, "ttl_12h_tokens": -1 } }""",
+        0,
+        1975L,
+        null
+    )]
+    [InlineData(
+        """{ "cached_tokens": 0, "cache_write_tokens": 1975, "cache_write_tokens_details": { "ttl_30m_tokens": 1975, "ttl_12h_tokens": 1 } }""",
+        0,
+        1975L,
+        null
+    )]
+    public async Task UsageMessage_preserves_validated_input_inclusive_cache_writes_through_serialization(
+        string inputDetails,
+        int cachedTokens,
+        long? writeTotal,
+        long? write12h
+    )
+    {
+        var completed = ResponseEventParser.Parse(
+            $$"""
+            {
+              "type": "response.completed",
+              "response": {
+                "usage": {
+                  "input_tokens": 1978,
+                  "input_tokens_details": {{inputDetails}},
+                  "output_tokens": 5,
+                  "total_tokens": 1983
+                }
+              }
+            }
+            """
+        );
+        using var agent = new OpenAiResponsesAgent("test-agent", new StubResponsesClient(completed));
+        var stream = await agent.GenerateReplyStreamingAsync([new TextMessage { Role = Role.User, Text = "hi" }]);
+        UsageMessage? message = null;
+        await foreach (var item in stream)
+        {
+            if (item is UsageMessage usage)
+            {
+                message = usage;
+            }
+        }
+
+        message.Should().NotBeNull();
+        var persisted = JsonSerializer.Deserialize<Usage>(JsonSerializer.Serialize(message!.Usage));
+        persisted!.PromptTokens.Should().Be(1978);
+        persisted.TotalTokens.Should().Be(1983);
+        persisted.TotalCachedTokens.Should().Be(cachedTokens);
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(persisted));
+        var details = json.RootElement.TryGetProperty("input_tokens_details", out var value) ? value : default;
+        ReadCacheWrite(details, "responses_cache_write_tokens").Should().Be(writeTotal);
+        ReadCacheWrite(details, "responses_cache_write_12h_tokens").Should().Be(write12h);
+    }
+
+    [Theory]
+    [InlineData("2147483648")]
+    [InlineData("9223372036854775808")]
+    public async Task UsageMessage_is_not_emitted_when_reported_input_exceeds_its_numeric_range(string input)
+    {
+        var completed = ResponseEventParser.Parse(
+            $$"""
+            {
+              "type": "response.completed",
+              "response": {
+                "usage": {
+                  "input_tokens": {{input}},
+                  "input_tokens_details": { "cached_tokens": 0, "cache_write_tokens": 0 },
+                  "output_tokens": 5
+                }
+              }
+            }
+            """
+        );
+        using var agent = new OpenAiResponsesAgent("test-agent", new StubResponsesClient(completed));
+
+        var stream = await agent.GenerateReplyStreamingAsync([new TextMessage { Role = Role.User, Text = "hi" }]);
+        var usageMessages = new List<UsageMessage>();
+        Func<Task> read = async () =>
+        {
+            await foreach (var message in stream)
+            {
+                if (message is UsageMessage usage)
+                {
+                    usageMessages.Add(usage);
+                }
+            }
+        };
+
+        await read.Should().ThrowAsync<JsonException>().WithMessage("*input_tokens*");
+        usageMessages.Should().BeEmpty("the input cannot be represented as a billable usage record");
+    }
+
+    private static long? ReadCacheWrite(JsonElement details, string property) =>
+        details.ValueKind == JsonValueKind.Object && details.TryGetProperty(property, out var count)
+            ? count.GetInt64()
+            : null;
 
     /// <summary>Minimal <see cref="IOpenAiResponsesClient"/> that replays a fixed event sequence.</summary>
     private sealed class StubResponsesClient : IOpenAiResponsesClient

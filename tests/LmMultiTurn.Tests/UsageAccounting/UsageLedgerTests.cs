@@ -455,6 +455,97 @@ public class UsageLedgerTests
         merged.CostCompleteness.Should().Be(CostCompleteness.Complete);
     }
 
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    public void UpsertAttempt_ConflictingResponsesWritesStayPartialAcrossReplaysAndResume(
+        bool totalsDiffer,
+        bool reverse,
+        bool prepriced
+    )
+    {
+        var pricing = OpenAiPricing with
+        {
+            ResponsesCacheWrite30mPerMillion = 3.75m,
+            ResponsesCacheWrite12hPerMillion = 7.50m,
+            UnobservedCacheWritesFromInputTokens = 1_024,
+        };
+        var resolver = prepriced ? null : new CatalogResolver(pricing);
+        var ledger = new UsageLedger("conv-1", resolver);
+        var original = Obs("a1", "gpt", input: 1_979, output: 5, finalized: true);
+        var first = PriceWhenRelayed(
+            original with
+            {
+                ResponsesCacheWriteTokens = 1_976,
+                ResponsesCacheWrite12hTokens = 0,
+            }
+        );
+        var second = PriceWhenRelayed(
+            original with
+            {
+                ResponsesCacheWriteTokens = totalsDiffer ? 1_975 : 1_976,
+                ResponsesCacheWrite12hTokens = totalsDiffer ? 0 : 1,
+            }
+        );
+
+        ledger.UpsertAttempt(reverse ? second : first).CostCompleteness.Should().Be(CostCompleteness.Complete);
+        var conflicting = ledger.UpsertAttempt(reverse ? first : second);
+        conflicting.CostCompleteness.Should().Be(CostCompleteness.Partial);
+        conflicting.ResponsesCacheWriteTokens.Should().BeNull();
+        conflicting.ResponsesCacheWrite12hTokens.Should().BeNull();
+
+        ledger.UpsertAttempt(first).CostCompleteness.Should().Be(CostCompleteness.Partial);
+        ledger.Snapshot().EstimatedCostCompleteness.Should().Be(CostCompleteness.Partial);
+
+        var serialized = System.Text.Json.JsonSerializer.Serialize(ledger.SnapshotRecords());
+        var restored = System.Text.Json.JsonSerializer.Deserialize<UsageRecord[]>(serialized)!;
+        var resumed = new UsageLedger("conv-1", resolver);
+        resumed.SeedFromRecords(restored, ledger.Snapshot().FoldedRevision);
+        resumed.UpsertAttempt(second).CostCompleteness.Should().Be(CostCompleteness.Partial);
+
+        UsageRecord PriceWhenRelayed(UsageRecord observation) =>
+            prepriced
+                ? observation with
+                {
+                    EstimatedPublicCostMicros = pricing.Estimate(observation).Micros,
+                    CostCompleteness = CostCompleteness.Complete,
+                }
+                : observation;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UpsertAttempt_ConflictingResponsesWritesStayPartialBelowTheUnobservedWriteThreshold(bool reverse)
+    {
+        var pricing = OpenAiPricing with
+        {
+            ResponsesCacheWrite30mPerMillion = 3.75m,
+            ResponsesCacheWrite12hPerMillion = 7.50m,
+            UnobservedCacheWritesFromInputTokens = 1_024,
+        };
+        var ledger = new UsageLedger("conv-1", new CatalogResolver(pricing));
+        var first = Obs("a1", "gpt", input: 500, output: 5, finalized: true) with
+        {
+            CacheReadTokens = 100,
+            ResponsesCacheWriteTokens = 200,
+            ResponsesCacheWrite12hTokens = 0,
+        };
+        var second = first with { ResponsesCacheWriteTokens = 150 };
+
+        var observations = reverse ? (First: second, Second: first) : (First: first, Second: second);
+        ledger.UpsertAttempt(observations.First).CostCompleteness.Should().Be(CostCompleteness.Complete);
+        var merged = ledger.UpsertAttempt(observations.Second);
+
+        merged.ResponsesCacheWriteConflict.Should().BeTrue();
+        merged.ResponsesCacheWriteTokens.Should().BeNull();
+        merged.CostCompleteness.Should().Be(CostCompleteness.Partial);
+    }
+
     [Fact]
     public void Snapshot_MixedModels_SumsEachModelUnderItsOwnAccounting_AndCarriesTheWeakestCompleteness()
     {

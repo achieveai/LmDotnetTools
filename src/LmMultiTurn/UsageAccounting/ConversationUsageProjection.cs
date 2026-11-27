@@ -224,15 +224,27 @@ public static class ConversationUsageProjection
         }
     }
 
-    /// <summary>Loads the persisted aggregate for a conversation, or null when none has been stored.</summary>
-    public static async Task<ConversationUsageAggregate?> LoadAsync(
+    /// <summary>Loads the persisted aggregate without a pricing resolver.</summary>
+    public static Task<ConversationUsageAggregate?> LoadAsync(
         IConversationStore store,
         string threadId,
         CancellationToken ct = default
+    ) => LoadAsync(store, threadId, ct, pricingResolver: null);
+
+    /// <summary>
+    ///     Loads the persisted aggregate for a conversation, or null when none has been stored.
+    ///     A supplied pricing resolver checks historical Responses estimates for missing write telemetry
+    ///     without changing their stored amounts.
+    /// </summary>
+    public static async Task<ConversationUsageAggregate?> LoadAsync(
+        IConversationStore store,
+        string threadId,
+        CancellationToken ct,
+        IPricingResolver? pricingResolver
     )
     {
         ArgumentNullException.ThrowIfNull(store);
-        if (store is not IConversationUsageStore)
+        if (store is not IConversationUsageStore && pricingResolver is null)
         {
             return FromMetadata(await store.LoadMetadataAsync(threadId, ct).ConfigureAwait(false));
         }
@@ -243,14 +255,54 @@ public static class ConversationUsageProjection
             return null;
         }
 
-        return snapshot.Records.Count == 0 && snapshot.Aggregate is { } aggregate
+        if (snapshot.Records.Count == 0 && snapshot.Aggregate is { } aggregate)
+        {
+            return pricingResolver is null
+                ? aggregate
+                : WithAggregateOnlyResponsesCompleteness(aggregate, pricingResolver);
+        }
+
+        var records = pricingResolver is null
+            ? snapshot.Records
+            : snapshot.Records.Select(record => UsageLedger.WithResponsesCompleteness(record, pricingResolver));
+        return ConversationUsageAggregate.Fold(threadId, records, snapshot.FoldedRevision, snapshot.Completeness);
+    }
+
+    private static ConversationUsageAggregate WithAggregateOnlyResponsesCompleteness(
+        ConversationUsageAggregate aggregate,
+        IPricingResolver pricingResolver
+    )
+    {
+        if (aggregate.EstimatedCostCompleteness != CostCompleteness.Complete)
+        {
+            return aggregate;
+        }
+
+        // A model subtotal lacks the per-attempt partition. Treat a cacheable total as potentially
+        // underpriced even if the original attempts might each have been below the write threshold.
+        var perModel = aggregate
+            .PerModel.Select(model =>
+                pricingResolver.Resolve(model.ModelId)
+                    is {
+                        ResponsesCacheWrite30mPerMillion: not null,
+                        UnobservedCacheWritesFromInputTokens: { } threshold,
+                    }
+                && model.InputTokens >= threshold
+                && model.EstimatedPublicCostMicros is not null
+                    ? model with
+                    {
+                        EstimatedCostCompleteness = CostCompleteness.Partial,
+                    }
+                    : model
+            )
+            .ToArray();
+        return perModel.SequenceEqual(aggregate.PerModel, ReferenceEqualityComparer.Instance)
             ? aggregate
-            : ConversationUsageAggregate.Fold(
-                threadId,
-                snapshot.Records,
-                snapshot.FoldedRevision,
-                snapshot.Completeness
-            );
+            : aggregate with
+            {
+                PerModel = perModel,
+                EstimatedCostCompleteness = CostCompleteness.Partial,
+            };
     }
 
     /// <summary>Loads the persisted canonical records for a conversation (empty when none), for rebuild.</summary>

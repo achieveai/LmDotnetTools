@@ -38,6 +38,14 @@ public record PricingConfig
     [JsonPropertyName("cache_write_1h_per_million")]
     public double? CacheWrite1hPerMillion { get; init; }
 
+    /// <inheritdoc cref="ModelPricing.ResponsesCacheWrite30mPerMillion" />
+    [JsonPropertyName("responses_cache_write_30m_per_million")]
+    public double? ResponsesCacheWrite30mPerMillion { get; init; }
+
+    /// <inheritdoc cref="ModelPricing.ResponsesCacheWrite12hPerMillion" />
+    [JsonPropertyName("responses_cache_write_12h_per_million")]
+    public double? ResponsesCacheWrite12hPerMillion { get; init; }
+
     /// <summary>Cost per million reasoning tokens, or null when reasoning is billed as completion.</summary>
     [JsonPropertyName("reasoning_per_million")]
     public double? ReasoningPerMillion { get; init; }
@@ -53,6 +61,18 @@ public record PricingConfig
     /// <summary>Date the rates were taken from the vendor's published list, or null when not recorded.</summary>
     [JsonPropertyName("effective_date")]
     public DateOnly? EffectiveDate { get; init; }
+
+    /// <inheritdoc cref="ModelPricing.RateChange" />
+    [JsonPropertyName("rate_change")]
+    public PricingRateChange? RateChange { get; init; }
+
+    /// <inheritdoc cref="ModelPricing.LongContext" />
+    [JsonPropertyName("long_context")]
+    public LongContextPricing? LongContext { get; init; }
+
+    /// <inheritdoc cref="ModelPricing.UnobservedCacheWritesFromInputTokens" />
+    [JsonPropertyName("unobserved_cache_writes_from_input_tokens")]
+    public int? UnobservedCacheWritesFromInputTokens { get; init; }
 
     /// <summary>
     ///     Calculates the total cost for a request.
