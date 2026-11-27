@@ -47,8 +47,9 @@ def source_fingerprint(source: Path) -> dict:
     Only this checkout's own state is recorded. Most source refs live in the pool's shared
     store, and other lanes' fetches move them at any time (#999), so they are not compared.
     The detached HEAD and the current ref show a hook that moves or switches this checkout.
-    The per-worktree refs (bisect, worktree, rewritten) belong to this checkout alone. The
-    replace refs are shared, but no lane writes them, and one changes the diff a SHA shows.
+    Direct per-worktree refs are tracked by object. Symbolic refs are tracked by target
+    name so a fetch cannot invalidate a checkout merely by advancing their shared target.
+    Replace refs are shared, but no lane writes them, and one changes the diff a SHA shows.
     """
     index = Path(observe(source, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
     paths = changed_paths(source)
@@ -64,7 +65,8 @@ def source_fingerprint(source: Path) -> dict:
     return {
         "head": observe(source, "rev-parse", "HEAD").strip(),
         "ref": current_ref(source, read_only=True),
-        "worktreeRefs": observe(source, "for-each-ref", "--format=%(refname) %(objectname)",
+        "worktreeRefs": observe(source, "for-each-ref",
+                                "--format=%(refname) %(if)%(symref)%(then)%(symref)%(else)%(objectname)%(end)",
                                 "refs/bisect", "refs/worktree", "refs/rewritten"),
         "replaceRefs": observe(source, "for-each-ref", "--format=%(refname) %(objectname)", "refs/replace"),
         "index": file_hash(index) if index.is_file() else None,
@@ -171,6 +173,16 @@ def commit_review(root: Path, repo: str, pr: int, slot: int, *,
                 merge = manifest.get("merge_sha")
                 if not isinstance(merge, str) or not re.fullmatch(r"[0-9a-f]{40}", merge):
                     raise ReviewError("Invalid prepared merge SHA.")
+                if Path(observe(outer, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()).resolve() != state.common:
+                    raise ReviewError("Outer slot is not owned by this review repository.")
+                if Path(observe(source, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()).resolve() != pool.store.resolve():
+                    raise ReviewError("Nested source is not owned by its configured pool.")
+                # A retry must not take an earlier hook's operation or replacement as its baseline.
+                existing_ref = observe(source, "for-each-ref", "--count=1", "--format=%(refname)",
+                                       "refs/bisect", "refs/replace", "refs/rewritten").strip()
+                if existing_ref:
+                    raise ReviewError(f"An existing Git operation or index lock must be resolved first. "
+                                      f"Source ref {existing_ref} is still present; inspect it before retrying.")
                 if observe(source, "rev-parse", "HEAD").strip() != merge or current_ref(source, read_only=True):
                     raise ReviewError("Source must remain detached at its prepared PR merge.")
                 for key in ("source_sha", "head_sha"):
@@ -182,10 +194,6 @@ def commit_review(root: Path, repo: str, pr: int, slot: int, *,
                     assert_no_git_operation(checkout, read_only=True)
                 if observe(outer, "diff", "--cached", "--name-only", "-z") or observe(source, "diff", "--cached", "--name-only", "-z"):
                     raise ReviewError("Existing staged changes must be inspected before committing.")
-                if Path(observe(outer, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()).resolve() != state.common:
-                    raise ReviewError("Outer slot is not owned by this review repository.")
-                if Path(observe(source, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()).resolve() != pool.store.resolve():
-                    raise ReviewError("Nested source is not owned by its configured pool.")
                 source_before = source_fingerprint(source)
                 branch = branch_for(outer, pool, pr, expected_branch)
                 before = inventory(outer, directory)

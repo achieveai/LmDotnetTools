@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using CodeReviewDaemon.Sample.Tests.Infrastructure;
+using FluentAssertions.Execution;
 
 namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 
@@ -11,6 +12,21 @@ namespace CodeReviewDaemon.Sample.Tests.Scenarios;
 /// </summary>
 public sealed class ReviewdSourceFingerprintTests
 {
+    private const string GitHarness = """
+        import json, subprocess, sys
+        from pathlib import Path
+        sys.path.insert(0, sys.argv[1])
+        import review_commit as commit
+        from review_common import ReviewError
+        work = Path(sys.argv[2])
+
+        def git(cwd, *args):
+            return subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.com',
+                                   '-C', str(cwd), *args],
+                                  check=True, capture_output=True, text=True).stdout.strip()
+
+        """;
+
     [SkippableFact]
     public async Task Another_lanes_fetch_into_the_shared_store_passes_but_a_change_to_this_checkout_fails()
     {
@@ -22,18 +38,6 @@ public sealed class ReviewdSourceFingerprintTests
             // Most rejected cases change only what one fingerprint field sees, so dropping that field fails them. The
             // branch switch and the tracked edit are each seen by several fields, so they check overlapping guards.
             const string harness = """
-                import json, subprocess, sys
-                from pathlib import Path
-                sys.path.insert(0, sys.argv[1])
-                import review_commit as commit
-                from review_common import ReviewError
-                work = Path(sys.argv[2])
-
-                def git(cwd, *args):
-                    return subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.com',
-                                           '-c', 'commit.gpgsign=false', '-C', str(cwd), *args],
-                                          check=True, capture_output=True, text=True).stdout.strip()
-
                 def has_ref(cwd, ref):
                     return subprocess.run(['git', '-C', str(cwd), 'rev-parse', '-q', '--verify', ref],
                                           capture_output=True).returncode == 0
@@ -97,6 +101,35 @@ public sealed class ReviewdSourceFingerprintTests
                         return {'ownRef': has_ref(a, namespace + '/x') and not has_ref(b, namespace + '/x')}
                     return write
 
+                def seeds_own_ref(namespace):
+                    return lambda a: git(a, 'update-ref', namespace + '/x', 'HEAD^')
+
+                def move_own_ref(namespace):
+                    def move(a, b, first):
+                        ref = namespace + '/x'
+                        earlier = git(a, 'rev-parse', ref)
+                        git(a, 'update-ref', ref, 'HEAD')
+                        return {'sameNameNewTarget': git(a, 'rev-parse', ref) != earlier and not has_ref(b, ref)}
+                    return move
+
+                def symbolic_ref(a):
+                    git(a, 'symbolic-ref', 'refs/worktree/shared-tip', 'refs/heads/main')
+                    git(a, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+
+                def shared_symbolic_target_moves(a, b, first):
+                    ref = 'refs/worktree/shared-tip'
+                    before = git(a, 'rev-parse', ref)
+                    facts = other_lane_fetches(a, b, first)
+                    return {**facts, 'sameNameNewTarget': git(a, 'rev-parse', ref) != before,
+                            'sameSymbolicTarget': git(a, 'symbolic-ref', ref) == 'refs/heads/main'}
+
+                def symbolic_ref_retargeted(a, b, first):
+                    ref = 'refs/worktree/shared-tip'
+                    before = git(a, 'rev-parse', ref)
+                    git(a, 'symbolic-ref', ref, 'refs/remotes/origin/main')
+                    return {'sameResolvedTarget': git(a, 'rev-parse', ref) == before,
+                            'newSymbolicTarget': git(a, 'symbolic-ref', ref) == 'refs/remotes/origin/main'}
+
                 def replacement(a, message):
                     return git(a, 'commit-tree', 'HEAD^{tree}', '-m', message)
 
@@ -115,6 +148,8 @@ public sealed class ReviewdSourceFingerprintTests
 
                 cases = {
                     'otherLaneFetches': (None, other_lane_fetches),
+                    'sharedSymbolicTargetMoves': (symbolic_ref, shared_symbolic_target_moves),
+                    'ownSymbolicRefRetargeted': (symbolic_ref, symbolic_ref_retargeted),
                     'headMovedToSameTree': (None, same_tree_head),
                     'switchedOntoBranch': (None, lambda a, b, first: git(a, 'switch', '-q', '-c', 'hook-branch')),
                     'assumeUnchanged': (None, lambda a, b, first: git(a, 'update-index', '--assume-unchanged',
@@ -126,6 +161,8 @@ public sealed class ReviewdSourceFingerprintTests
                     'bisectStarted': (None, bisected),
                     'worktreeRefAdded': (None, own_ref('refs/worktree')),
                     'rewrittenRefAdded': (None, own_ref('refs/rewritten')),
+                    'worktreeRefMoved': (seeds_own_ref('refs/worktree'), move_own_ref('refs/worktree')),
+                    'rewrittenRefMoved': (seeds_own_ref('refs/rewritten'), move_own_ref('refs/rewritten')),
                 }
                 result = {}
                 for name, (prepare, change) in cases.items():
@@ -146,10 +183,11 @@ public sealed class ReviewdSourceFingerprintTests
                 print(json.dumps(result))
                 """;
 
-            var (exitCode, stdout, stderr) = await ReviewdPreparedContextTests.RunKitAsync(harness, work);
+            var (exitCode, stdout, stderr) = await ReviewdPreparedContextTests.RunKitAsync(GitHarness + harness, work);
 
             exitCode.Should().Be(0, stderr);
             var result = JsonNode.Parse(stdout)!.AsObject();
+            using var assertions = new AssertionScope();
             var fetch = result["otherLaneFetches"]!;
             foreach (var fact in new[] { "storeRefsMoved", "mainExistedBefore", "mainMoved", "ownPrepareKept" })
                 fetch[fact]!.GetValue<bool>().Should().BeTrue($"lane B's fetch is visible from A ({fact})");
@@ -158,6 +196,14 @@ public sealed class ReviewdSourceFingerprintTests
                 .GetValue<string>()
                 .Should()
                 .Be("unchanged", "another lane's fetch into the shared store is not a change to this checkout");
+            var sharedTarget = result["sharedSymbolicTargetMoves"]!;
+            sharedTarget["mainMoved"]!.GetValue<bool>().Should().BeTrue();
+            sharedTarget["sameNameNewTarget"]!.GetValue<bool>().Should().BeTrue();
+            sharedTarget["sameSymbolicTarget"]!.GetValue<bool>().Should().BeTrue();
+            sharedTarget["outcome"]!.GetValue<string>().Should().Be("unchanged");
+            var ownSymbolicRef = result["ownSymbolicRefRetargeted"]!;
+            ownSymbolicRef["sameResolvedTarget"]!.GetValue<bool>().Should().BeTrue();
+            ownSymbolicRef["newSymbolicTarget"]!.GetValue<bool>().Should().BeTrue();
             result["replaceRefAdded"]!["replaceRef"]!.GetValue<bool>().Should().BeTrue();
             result["bisectStarted"]!["bisectRef"]!.GetValue<bool>().Should().BeTrue();
             result["replaceRefRetargeted"]!["sameNameNewTarget"]!
@@ -166,6 +212,11 @@ public sealed class ReviewdSourceFingerprintTests
                 .BeTrue("only the replace ref's target changes, not its name");
             foreach (var name in new[] { "worktreeRefAdded", "rewrittenRefAdded" })
                 result[name]!["ownRef"]!.GetValue<bool>().Should().BeTrue($"{name} is A's ref alone");
+            foreach (var name in new[] { "worktreeRefMoved", "rewrittenRefMoved" })
+                result[name]!["sameNameNewTarget"]!
+                    .GetValue<bool>()
+                    .Should()
+                    .BeTrue($"{name} changes an existing local ref");
             foreach (
                 var name in new[]
                 {
@@ -179,6 +230,9 @@ public sealed class ReviewdSourceFingerprintTests
                     "bisectStarted",
                     "worktreeRefAdded",
                     "rewrittenRefAdded",
+                    "worktreeRefMoved",
+                    "rewrittenRefMoved",
+                    "ownSymbolicRefRetargeted",
                 }
             )
             {
@@ -188,10 +242,112 @@ public sealed class ReviewdSourceFingerprintTests
                     .Should()
                     .Be("changed", $"a hook that leaves this checkout {name} must still fail the commit");
                 // The retry classifier matches only this phrase.
-                rejected["error"]!
+                var error = rejected["error"]?.GetValue<string>();
+                error.Should().Contain("Source changed during artifact capture or commit hook", name);
+            }
+        }
+        finally
+        {
+            RealGitFixture.ForceDelete(work);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("clean")]
+    [InlineData("bisect")]
+    [InlineData("replace")]
+    [InlineData("rewritten")]
+    public async Task Commit_refuses_stale_source_operation_refs_before_capturing_artifacts(string kind)
+    {
+        var work = Directory.CreateTempSubdirectory("reviewd-source-retry-").FullName;
+        try
+        {
+            const string harness = """
+                from unittest.mock import patch
+
+                kind = sys.argv[3]
+                seed = work / 'seed'
+                seed.mkdir()
+                git(seed, 'init', '-q', '--initial-branch=main')
+                git(seed, 'commit', '-qm', 'Prepared source', '--allow-empty')
+                sha = git(seed, 'rev-parse', 'HEAD')
+
+                root = work / 'review-store'
+                root.mkdir()
+                git(root, 'init', '-q', '--initial-branch=main')
+                (root / '.gitmodules').write_text('[submodule "nova"]\n\tpath = repos/nova\n'
+                                                   '\turl = https://github.com/example/nova.git\n')
+                git(root, 'add', '.gitmodules')
+                git(root, 'update-index', '--add', '--cacheinfo', f'160000,{sha},repos/nova')
+                git(root, 'commit', '-qm', 'Configure source pool')
+                state = commit.ReviewState(root, read_only=True)
+                pool = commit.SourcePool(state, commit.select_module_by_name(root, 'nova'))
+                outer = root / pool.slot_relative_path(0)
+                git(root, 'worktree', 'add', '-q', '--detach', str(outer), 'main')
+
+                pool.store.parent.mkdir(parents=True)
+                git(seed, 'clone', '-q', '--bare', str(seed), str(pool.store))
+                source = outer / pool.module['path']
+                git(pool.store, 'worktree', 'add', '-q', '--detach', str(source), 'main')
+                manifest = state.prepared_slot_path(pool.repo_key, 0)
+                manifest.parent.mkdir()
+                manifest.write_text(json.dumps({'schema': 1, 'repo': 'nova', 'slot': 0, 'pr': 9,
+                                                'merge_sha': sha, 'source_sha': sha}))
+                (source / 'review-note.txt').write_text('Keep my source evidence\n')
+                git(source, 'update-ref', 'refs/worktree/prepare-marker', sha)
+
+                ref = {'bisect': 'refs/bisect/bad', 'replace': f'refs/replace/{sha}',
+                       'rewritten': 'refs/rewritten/onto'}.get(kind)
+                if ref:
+                    target = git(source, 'commit-tree', 'HEAD^{tree}', '-m', 'Earlier hook evidence')
+                    git(source, 'update-ref', ref, target)
+                else:
+                    other = work / 'another-lane'
+                    git(pool.store, 'worktree', 'add', '-q', '--detach', str(other), 'main')
+                    git(other, 'update-ref', 'refs/bisect/bad', sha)
+                    git(other, 'update-ref', 'refs/rewritten/onto', sha)
+                with patch.object(commit, 'source_fingerprint', wraps=commit.source_fingerprint) as fingerprint:
+                    try:
+                        plan = commit.commit_review(root, 'nova', 9, 0, source_sha=sha, dry_run=True, push=False)
+                        error = None
+                    except ReviewError as refusal:
+                        plan, error = None, str(refusal)
+                print(json.dumps({'error': error, 'plan': plan, 'ref': ref, 'fingerprints': fingerprint.call_count,
+                                  'sourceKept': git(source, 'rev-parse', 'HEAD') == sha and
+                                      (source / 'review-note.txt').read_text() == 'Keep my source evidence\n' and
+                                      (not ref or git(source, 'rev-parse', ref) == target),
+                                  'captureWritten': (outer / 'PRs').exists()}))
+                """;
+            var (exitCode, stdout, stderr) = await ReviewdPreparedContextTests.RunKitAsync(
+                GitHarness + harness,
+                work,
+                kind
+            );
+
+            exitCode.Should().Be(0, stderr);
+            var result = JsonNode.Parse(stdout)!.AsObject();
+            result["sourceKept"]!.GetValue<bool>().Should().BeTrue();
+            result["captureWritten"]!.GetValue<bool>().Should().BeFalse();
+            if (kind == "clean")
+            {
+                result["error"].Should().BeNull();
+                result["plan"]!["copiedFiles"]!
+                    .AsArray()
+                    .Select(path => path!.GetValue<string>())
+                    .Should()
+                    .Contain("PRs/nova-9/outside/source/review-note.txt");
+                result["fingerprints"]!.GetValue<int>().Should().BePositive();
+            }
+            else
+            {
+                result["error"].Should().NotBeNull("an existing {0} ref must prevent taking the retry baseline", kind);
+                result["error"]!
                     .GetValue<string>()
                     .Should()
-                    .Contain("Source changed during artifact capture or commit hook", name);
+                    .Contain("An existing Git operation or index lock must be resolved first.")
+                    .And.Contain(result["ref"]!.GetValue<string>());
+                result["fingerprints"]!.GetValue<int>().Should().Be(0);
+                result["plan"].Should().BeNull();
             }
         }
         finally
