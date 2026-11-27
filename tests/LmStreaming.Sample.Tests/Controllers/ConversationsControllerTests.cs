@@ -348,6 +348,74 @@ public class ConversationsControllerTests
         pool.GetAgentMode(threadId).Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Delete_WithoutSandboxRegistry_RespectsCallerCancellationAfterAuthorization(bool callerCancels)
+    {
+        const string threadId = "thread-delete-without-registry";
+        var backing = new InMemoryConversationStore();
+        var metadata = new ThreadMetadata { ThreadId = threadId, LastUpdated = 1 };
+        var message = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage { Role = Role.User, Text = "Keep unless deleted" },
+            threadId,
+            "run-1"
+        );
+        await backing.SaveMetadataAsync(threadId, metadata);
+        await backing.AppendMessagesAsync(threadId, [message]);
+        var persisted = (await backing.LoadMessagesAsync(threadId)).Should().ContainSingle().Which;
+
+        using var caller = new CancellationTokenSource();
+        var store = new Mock<IConversationStore>(MockBehavior.Strict);
+        store
+            .Setup(s => s.LoadMetadataAsync(threadId, It.IsAny<CancellationToken>()))
+            .Returns(
+                async (string id, CancellationToken token) =>
+                {
+                    var loaded = await backing.LoadMetadataAsync(id, token);
+                    if (callerCancels && token == caller.Token)
+                    {
+                        await caller.CancelAsync();
+                    }
+
+                    return loaded;
+                }
+            );
+        store
+            .Setup(s => s.ListThreadsAsync(int.MaxValue, 0, null, It.IsAny<CancellationToken>()))
+            .Returns(
+                (int limit, int offset, ConversationListOptions? options, CancellationToken token) =>
+                    backing.ListThreadsAsync(limit, offset, options, token)
+            );
+        store
+            .Setup(s => s.DeleteThreadAsync(threadId, It.IsAny<CancellationToken>()))
+            .Returns((string id, CancellationToken token) => backing.DeleteThreadAsync(id, token));
+        await using var pool = CreatePool();
+        var controller = CreateController(store.Object, pool, ModeStoreResolvingSystemModes());
+
+        if (callerCancels)
+        {
+            await FluentActions
+                .Awaiting(() => controller.Delete(threadId, caller.Token))
+                .Should()
+                .ThrowAsync<OperationCanceledException>();
+            store.Verify(s => s.DeleteThreadAsync(threadId, It.IsAny<CancellationToken>()), Times.Never);
+            (await backing.LoadMetadataAsync(threadId)).Should().BeEquivalentTo(metadata);
+            (await backing.LoadMessagesAsync(threadId))
+                .Should()
+                .ContainSingle()
+                .Which.Should()
+                .BeEquivalentTo(persisted);
+        }
+        else
+        {
+            (await controller.Delete(threadId, caller.Token)).Should().BeOfType<NoContentResult>();
+            store.Verify(s => s.ListThreadsAsync(int.MaxValue, 0, null, It.IsAny<CancellationToken>()), Times.Once);
+            (await backing.LoadMetadataAsync(threadId)).Should().BeNull();
+            (await backing.LoadMessagesAsync(threadId)).Should().BeEmpty();
+        }
+    }
+
     [Fact]
     public async Task List_ExcludesSubAgentThreads_FromTheConversationSidebar()
     {

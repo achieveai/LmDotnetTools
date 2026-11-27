@@ -3013,7 +3013,8 @@ public class ConversationsController(
 
         // Not store.DeleteThreadAsync: a fork reads its original's messages in place, so an original
         // with forks is only marked deleted and kept until its last fork goes.
-        // Once a sandbox delete commits, finish the conversation delete even if the caller leaves.
+        // A configured registry has committed the delete at this point, including when it found no sandboxes.
+        // Once committed, finish the conversation delete even if the caller leaves.
         var deleteToken = sandboxSessionRegistry is null ? ct : CancellationToken.None;
         _ = await ConversationForks.DeleteAsync(store, threadId, deleteToken);
 
