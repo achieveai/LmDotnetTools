@@ -3412,13 +3412,23 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
     }
 
     [SkippableTheory]
-    [InlineData("exact")]
-    [InlineData("corrected")]
-    [InlineData("remote-corrected")]
-    [InlineData("different-publication")]
-    [InlineData("ambiguous")]
-    [InlineData("malformed-publication")]
-    public async Task Judge_inputs_take_a_live_rounds_revision_from_the_attempt_that_archived_it(string path)
+    [InlineData("exact", true)]
+    [InlineData("corrected", true)]
+    [InlineData("remote-corrected", true)]
+    [InlineData("different-publication", false)]
+    [InlineData("ambiguous", false)]
+    [InlineData("malformed-publication", false)]
+    [InlineData("duplicate-publication", false)]
+    [InlineData("wrong-branch", false)]
+    [InlineData("wrong-directory", false)]
+    [InlineData("nonancestor", false)]
+    [InlineData("invalid-continuation", false)]
+    [InlineData("missing-continuation", false)]
+    [InlineData("duplicate-continuation", false)]
+    public async Task Judge_inputs_take_a_live_rounds_revision_from_the_attempt_that_archived_it(
+        string path,
+        bool matches
+    )
     {
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
         Skip.If(python is null, "no Python interpreter on PATH, so the judge input script cannot run");
@@ -3466,6 +3476,32 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 primary["comments"]![0]!["commentId"] = "1";
                 await File.WriteAllTextAsync(primaryPath, primary.ToJsonString());
             }
+            else if (path == "duplicate-publication")
+            {
+                var primaryPath = Path.Combine(root, directory, "publication_receipts.json");
+                var primary = JsonNode.Parse(await File.ReadAllTextAsync(primaryPath))!;
+                var comments = primary["comments"]!.AsArray();
+                comments.Add(comments[0]!.DeepClone());
+                await File.WriteAllTextAsync(primaryPath, primary.ToJsonString());
+            }
+            else if (path.EndsWith("-continuation", StringComparison.Ordinal))
+            {
+                var primaryPath = Path.Combine(root, directory, "publication_receipts.json");
+                var primary = JsonNode.Parse(await File.ReadAllTextAsync(primaryPath))!;
+                var part =
+                    path == "invalid-continuation"
+                        ? "publication_receipts-unlinked-recovered.json"
+                        : "publication_receipts-2.json";
+                if (path != "missing-continuation")
+                {
+                    var emptyPart = primary.DeepClone();
+                    emptyPart["comments"] = new JsonArray();
+                    await File.WriteAllTextAsync(Path.Combine(root, directory, part), emptyPart.ToJsonString());
+                }
+                primary["continued_in"] =
+                    path == "duplicate-continuation" ? new JsonArray(part, part) : new JsonArray(part);
+                await File.WriteAllTextAsync(primaryPath, primary.ToJsonString());
+            }
             else if (path is "corrected" or "remote-corrected")
             {
                 var primaryPath = Path.Combine(root, directory, "publication_receipts.json");
@@ -3478,6 +3514,10 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                 olderCopy["comments"]![0]!["threadId"] = 102;
                 await File.WriteAllTextAsync(
                     Path.Combine(root, directory, "publication_receipts-9.json"),
+                    olderCopy.ToJsonString()
+                );
+                await File.WriteAllTextAsync(
+                    Path.Combine(root, directory, "publication_receipts-earlier-recovered.json"),
                     olderCopy.ToJsonString()
                 );
                 primary["comments"] = new JsonArray();
@@ -3500,6 +3540,20 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             ["branch"] = branch,
             ["reviewDirectory"] = directory,
         };
+        var attemptArtifact = artifact.DeepClone();
+        if (path == "wrong-branch")
+        {
+            attemptArtifact["branch"] = "review/nova-17-bbbbbbbb";
+        }
+        else if (path == "wrong-directory")
+        {
+            attemptArtifact["reviewDirectory"] = "PRs/nova-170";
+        }
+        else if (path == "nonancestor")
+        {
+            var tree = await GitAsync(root, "rev-parse", "HEAD^{tree}");
+            attemptArtifact["commit"] = await GitAsync(root, "commit-tree", tree, "-m", "Unrelated archive");
+        }
         var receipt = new JsonObject
         {
             ["repository"] = Repo.DisplayName,
@@ -3530,7 +3584,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
                         new JsonObject
                         {
                             ["key"] = "reviewd/attempt-history/matching",
-                            ["artifactCommit"] = artifact.DeepClone(),
+                            ["artifactCommit"] = attemptArtifact,
                             ["headSha"] = Head,
                             ["mergeSha"] = reviewedMerge,
                             ["verifiedPublication"] = new JsonObject { ["comments"] = published.DeepClone() },
@@ -3551,7 +3605,7 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             .AsArray()
             .Single(r => r!["branch"]!.GetValue<string>() == packetBranch)!;
         round["artifactCommit"]!.GetValue<string>().Should().Be(tip);
-        if (path is "different-publication" or "ambiguous" or "malformed-publication")
+        if (!matches)
         {
             round["mergeSha"]!
                 .GetValue<string>()
@@ -3580,6 +3634,16 @@ public sealed class ReviewdShadowTests(ITestOutputHelper output) : LoggingTestBa
             .Select(r => r!.GetValue<string>())
             .Should()
             .Contain($"store-HEAD:PRs/nova-17/{rawCopy}", "the stale copy stays visible as evidence");
+        if (path is "corrected" or "remote-corrected")
+        {
+            var earlier = packet["ours"]!["posted"]!.AsArray().Single(r => r!["threadId"]!.GetValue<int>() == 102)!;
+            earlier["rounds"]!.AsArray().Select(r => r!.GetValue<string>()).Should().Equal("review/nova-17-bbbbbbbb");
+            earlier["sources"]!
+                .AsArray()
+                .Select(r => r!.GetValue<string>())
+                .Should()
+                .Contain($"branch:{packetBranch}:{directory}/publication_receipts-earlier-recovered.json");
+        }
 
         Task WriteArchivedReceiptAsync(int thread, int comment) =>
             File.WriteAllTextAsync(

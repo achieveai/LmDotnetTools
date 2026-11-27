@@ -273,9 +273,12 @@ def parse_receipt(text, where):
     return data, None
 
 
-def publication_id(comment):
+def publication_id(comment, *, exact=False):
     try:
-        return int(comment["threadId"]), int(comment["commentId"])
+        pair = comment["threadId"], comment["commentId"]
+        if exact:
+            return pair if all(type(identifier) is int and identifier > 0 for identifier in pair) else None
+        return int(pair[0]), int(pair[1])
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -519,10 +522,8 @@ def primary_receipt_names(receipts):
 def publication_ids(comments):
     ids = set()
     for comment in comments:
-        if not isinstance(comment, dict):
-            return set()
-        pair = comment.get("threadId"), comment.get("commentId")
-        if not all(type(identifier) is int and identifier > 0 for identifier in pair) or pair in ids:
+        pair = publication_id(comment, exact=True)
+        if pair is None or pair in ids:
             return set()
         ids.add(pair)
     return ids
