@@ -1239,12 +1239,17 @@ internal static class ReviewBatch
                 var cleanup = attempt?["stage"]?.GetValue<string>() == "completed-verified" && !Reusable(attempt);
                 // A finished owner still publishes and cleans up on its prepared revision after closure.
                 var reviewFinished = attempt is not null && !Reusable(attempt) && ReviewRunner.ReviewFinished(attempt);
-                if (!cleanup && !reviewFinished && liveStatus != "active")
+                // A closed PR may have an exact original input whose completion was not saved by its controller.
+                // The resumed runner checks that input on the host before letting it finish on the prepared revision.
+                var reconcileClosedReview =
+                    liveStatus != "active" && ReviewRunner.ReviewInputToReconcile(attempt) is not null;
+                var canFinish = reviewFinished || reconcileClosedReview;
+                if (!cleanup && !canFinish && liveStatus != "active")
                 {
                     await SaveAsync(() => entry["status"] = attempt is null ? "closed" : "closed-held");
                     return;
                 }
-                if (!cleanup && !reviewFinished && live["headSha"]!.GetValue<string>() != head)
+                if (!cleanup && !canFinish && live["headSha"]!.GetValue<string>() != head)
                 {
                     await SaveAsync(() => entry["status"] = attempt is null ? "stale" : "held");
                     return;
@@ -1259,7 +1264,7 @@ internal static class ReviewBatch
                     && (
                         (liveStatus == "active" && live["isDraft"]!.GetValue<bool>())
                         || (
-                            !reviewFinished
+                            !canFinish
                             && (
                                 live["mergeSha"]?.GetValue<string>() is not { Length: 40 }
                                 || (

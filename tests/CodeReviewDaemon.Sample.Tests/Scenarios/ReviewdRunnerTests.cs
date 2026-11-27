@@ -2473,7 +2473,7 @@ public sealed class ReviewdRunnerTests
     [InlineData("review-completed", "abandoned", "verified")]
     [InlineData("verify-pending", "head", "verified")]
     [InlineData("review-running", "head", "held")]
-    [InlineData("review-running", "completed", "closed-held")]
+    [InlineData("review-running", "completed", "verified")]
     public async Task Batch_finishes_a_finished_review_on_what_it_reviewed_after_the_pr_moved(
         string stage,
         string moved,
@@ -7399,18 +7399,23 @@ public sealed class ReviewdRunnerTests
     [InlineData("fresh")]
     [InlineData("resume")]
     [InlineData("resume-merged")]
+    [InlineData("resume-merged-checkpoint")]
+    [InlineData("resume-merged-running")]
+    [InlineData("resume-merged-stale-snapshot")]
     public Task Runner_finishes_a_finished_review_on_the_revision_it_reviewed(string path) =>
         RunFinishedReviewScenarioAsync(path);
 
-    [SkippableFact]
-    public async Task Runner_posts_one_summary_after_merge_and_releases_the_slot_in_the_same_run()
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Runner_publishes_a_merged_review_and_attempts_one_bug_before_releasing_the_slot(bool bugDenied)
     {
         var python = await ReviewdSummaryReplyTests.FindPythonAsync();
         Skip.If(python is null, "no Python interpreter on PATH, so the sandbox's publication check cannot be run");
-        await RunFinishedReviewScenarioAsync("merged", python);
+        await RunFinishedReviewScenarioAsync("merged", python, bugDenied);
     }
 
-    private static async Task RunFinishedReviewScenarioAsync(string path, string? python = null)
+    private static async Task RunFinishedReviewScenarioAsync(string path, string? python = null, bool bugDenied = false)
     {
         var database = Path.Combine(Path.GetTempPath(), $"reviewd-finished-{Guid.NewGuid():N}.db");
         var mergesDuringPublication = path == "merged";
@@ -7420,35 +7425,102 @@ public sealed class ReviewdRunnerTests
         var (liveHead, liveMerge) = (reviewed, prepared);
         var liveStatus = "active";
         var sends = 0;
-        var resume = path is "resume" or "resume-merged";
+        var resume = path.StartsWith("resume", StringComparison.Ordinal);
         var failConfirmationInspect = resume;
         var steps = new List<string>();
-        const string finding = "src/Queue.cs:17: Failed jobs keep a slot.";
+        const string finding = "Failed jobs keep a slot.";
         const string summaryRoute = "issues/17/comments";
-        JsonObject? postedComment = null;
-        JsonObject? publicationReceipt = null;
+        const string inlineRoute = "pulls/17/reviews";
+        const string bugRoute = "issues";
+        const string closedAt = "2026-01-15T12:00:00Z";
+        const string summaryReadRoute = "issues/comments/5";
+        var bugMarker = $"Reviewd source: PR #17, reviewed head {reviewed}";
+        var posted = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        var publicationReceipts = new JsonArray();
         var provider = new FakeHttpMessageHandler()
             .On(
                 request => request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath == "/pulls/17",
-                _ => Json("""{"state":"closed","merged":true}""")
+                _ => Json($$"""{"state":"closed","merged":true,"closed_at":"{{closedAt}}"}""")
             )
             .OnAsync(
                 request => request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/" + summaryRoute,
                 async request =>
                 {
                     liveStatus.Should().Be("completed");
-                    postedComment = new JsonObject
+                    posted["issues/comments/5"] = new JsonObject
                     {
                         ["id"] = 5,
                         ["issue_url"] = "https://api.github.test/repos/org/Nova/issues/17",
                         ["body"] = (await request.Content!.ReadFromJsonAsync<JsonObject>())!["body"]!.DeepClone(),
+                        ["created_at"] = "2026-01-15T12:00:01Z",
                     };
-                    return Json(postedComment.ToJsonString());
+                    return Json(posted["issues/comments/5"].ToJsonString());
+                }
+            )
+            .OnAsync(
+                request =>
+                    request.Method == HttpMethod.Patch && request.RequestUri!.AbsolutePath == "/" + summaryReadRoute,
+                async request =>
+                {
+                    var update = (await request.Content!.ReadFromJsonAsync<JsonObject>())!;
+                    posted[summaryReadRoute]["body"] = update["body"]!.DeepClone();
+                    return Json(posted[summaryReadRoute].ToJsonString());
+                }
+            )
+            .OnAsync(
+                request => request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/" + inlineRoute,
+                async request =>
+                {
+                    liveStatus.Should().Be("completed");
+                    var review = (await request.Content!.ReadFromJsonAsync<JsonObject>())!;
+                    review["commit_id"]!.GetValue<string>().Should().Be(reviewed);
+                    review["event"]!.GetValue<string>().Should().Be("COMMENT");
+                    var note = review["comments"]!.AsArray().Single()!;
+                    note["side"]!.GetValue<string>().Should().Be("RIGHT");
+                    posted["pulls/17/reviews/7"] = new JsonObject
+                    {
+                        ["id"] = 7,
+                        ["pull_request_url"] = "https://api.github.test/repos/org/Nova/pulls/17",
+                        ["commit_id"] = review["commit_id"]!.DeepClone(),
+                        ["body"] = review["body"]!.DeepClone(),
+                    };
+                    posted["pulls/comments/6"] = new JsonObject
+                    {
+                        ["id"] = 6,
+                        ["pull_request_url"] = "https://api.github.test/repos/org/Nova/pulls/17",
+                        ["original_commit_id"] = review["commit_id"]!.DeepClone(),
+                        ["body"] = note["body"]!.DeepClone(),
+                    };
+                    return Json("""{"id":7}""");
+                }
+            )
+            .OnJson(HttpMethod.Get, "/pulls/17/reviews/7/comments", """[{"id":6}]""")
+            .On(
+                request => request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath == "/" + bugRoute,
+                _ => Json("""[]""")
+            )
+            .OnAsync(
+                request => request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/" + bugRoute,
+                async request =>
+                {
+                    posted
+                        .Keys.Should()
+                        .BeEquivalentTo(["pulls/17/reviews/7", "pulls/comments/6", "issues/comments/5"]);
+                    if (bugDenied)
+                    {
+                        return new HttpResponseMessage(HttpStatusCode.Forbidden);
+                    }
+
+                    var bug = (await request.Content!.ReadFromJsonAsync<JsonObject>())!;
+                    bug["number"] = 18;
+                    posted["issues/18"] = bug;
+                    return Json(bug.ToJsonString());
                 }
             )
             .On(
-                request => request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath == "/issues/comments/5",
-                _ => Json(postedComment!.ToJsonString())
+                request =>
+                    request.Method == HttpMethod.Get && posted.ContainsKey(request.RequestUri!.AbsolutePath[1..]),
+                request => Json(posted[request.RequestUri!.AbsolutePath[1..]].ToJsonString())
             );
         using var github = new HttpClient(provider) { BaseAddress = new Uri("https://api.github.test/") };
         var handler = new FakeHttpMessageHandler()
@@ -7487,24 +7559,68 @@ public sealed class ReviewdRunnerTests
                         ]!.GetValue<string>();
                         prompt
                             .Should()
-                            .Contain("If the PR has merged or closed")
-                            .And.Contain("fold all inline findings and replies into one PR conversation summary")
+                            .Contain("If the PR has merged, use the normal inline and summary routes")
+                            .And.Contain($"commit_id {reviewed}")
                             .And.Contain(summaryRoute)
                             .And.Contain($"Reviewed commit {reviewed}")
-                            .And.NotContain("stop if it was closed");
+                            .And.NotContain("If the PR has merged or closed, fold all inline findings");
                         var pull = (await github.GetFromJsonAsync<JsonObject>("pulls/17"))!;
                         pull["merged"]!.GetValue<bool>().Should().BeTrue();
-                        var body = $"REQUEST_CHANGES\n\nReviewed commit {reviewed}\n\n- {finding}";
+                        using var inline = await github.PostAsJsonAsync(
+                            inlineRoute,
+                            new
+                            {
+                                commit_id = reviewed,
+                                @event = "COMMENT",
+                                body = "Inline findings.",
+                                comments = new[]
+                                {
+                                    new
+                                    {
+                                        path = "src/Queue.cs",
+                                        line = 17,
+                                        side = "RIGHT",
+                                        body = finding,
+                                    },
+                                },
+                            }
+                        );
+                        inline.EnsureSuccessStatusCode();
+                        var review = (await inline.Content.ReadFromJsonAsync<JsonObject>())!;
+                        publicationReceipts.Add(
+                            new JsonObject
+                            {
+                                ["commentType"] = "review",
+                                ["commentId"] = review["id"]!.DeepClone(),
+                                ["kind"] = "inline",
+                                ["content"] = "Inline findings.",
+                            }
+                        );
+                        var inlineComments = (
+                            await github.GetFromJsonAsync<JsonArray>($"pulls/17/reviews/{review["id"]}/comments")
+                        )!;
+                        publicationReceipts.Add(
+                            new JsonObject
+                            {
+                                ["commentType"] = "review_comment",
+                                ["commentId"] = inlineComments.Single()!["id"]!.DeepClone(),
+                                ["kind"] = "inline",
+                                ["content"] = finding,
+                            }
+                        );
+                        var body = $"APPROVE_WITH_COMMENTS\n\nReviewed commit {reviewed}\n\nSee the inline finding.";
                         using var post = await github.PostAsJsonAsync(summaryRoute, new { body });
                         post.EnsureSuccessStatusCode();
                         var comment = (await post.Content.ReadFromJsonAsync<JsonObject>())!;
-                        publicationReceipt = new JsonObject
-                        {
-                            ["commentType"] = "issue_comment",
-                            ["commentId"] = comment["id"]!.DeepClone(),
-                            ["kind"] = "summary",
-                            ["content"] = body,
-                        };
+                        publicationReceipts.Add(
+                            new JsonObject
+                            {
+                                ["commentType"] = "issue_comment",
+                                ["commentId"] = comment["id"]!.DeepClone(),
+                                ["kind"] = "summary",
+                                ["content"] = body,
+                            }
+                        );
                     }
                     else if (sends == 2 && mergesDuringPublication)
                     {
@@ -7514,8 +7630,26 @@ public sealed class ReviewdRunnerTests
                         prompt
                             .Should()
                             .Contain("recover its decided findings from this conversation")
-                            .And.Contain("confirm the summary without posting a second comment")
-                            .And.Contain($"Reviewed commit {reviewed}");
+                            .And.Contain(
+                                "If the PR merged before this review posted its summary and it has actionable findings, file one linked bug"
+                            )
+                            .And.Contain("A clean review or an unmerged closed PR needs no bug.")
+                            .And.Contain("POST https://api.github.com/repos/org/Nova/issues")
+                            .And.Contain(bugMarker)
+                            .And.Contain("Do not retry a create with an uncertain response")
+                            .And.Contain("update that same comment. PATCH issues/comments/<commentId>")
+                            .And.Contain("Continue confirming the published review even when bug creation fails");
+                        var corrected = $"REQUEST_CHANGES\n\nReviewed commit {reviewed}\n\n- {finding}";
+                        using var patch = await github.PatchAsJsonAsync(summaryReadRoute, new { body = corrected });
+                        patch.EnsureSuccessStatusCode();
+                        publicationReceipts.Last()!["content"] = corrected;
+                        (await github.GetFromJsonAsync<JsonArray>("issues?state=all"))!.Count.Should().Be(0);
+                        var body = $"[PR #17](https://github.com/org/Nova/pull/17)\n\n{bugMarker}\n\n- {finding}";
+                        using var bug = await github.PostAsJsonAsync(
+                            bugRoute,
+                            new { title = "Review findings after PR #17 merged", body }
+                        );
+                        bug.StatusCode.Should().Be(bugDenied ? HttpStatusCode.Forbidden : HttpStatusCode.OK);
                     }
 
                     return Json($$"""{"inputId":"input{{sends}}","idempotencyKeyHonored":true}""");
@@ -7523,6 +7657,15 @@ public sealed class ReviewdRunnerTests
             )
             .OnJson(HttpMethod.Put, "/metadata", "{}")
             .OnJson(HttpMethod.Post, "/unfreeze", """{"threadId":"thread","frozen":false}""")
+            .On(
+                request =>
+                    path == "resume-merged-running"
+                    && !failConfirmationInspect
+                    && request.Method == HttpMethod.Get
+                    && request.RequestUri!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal)
+                    && request.RequestUri.Query == "?inputId=input1",
+                _ => Json("""{"status":"Running","runId":"run"}""")
+            )
             .OnJson(HttpMethod.Get, "/status?", """{"status":"Completed","runId":"run","response":{"text":"done"}}""")
             .OnJson(HttpMethod.Get, "/run-state", """{"isInProgress":false,"currentRunId":null}""")
             .OnJson(HttpMethod.Get, "/subagents?", """{"schemaVersion":1,"nodes":[]}""");
@@ -7593,18 +7736,56 @@ public sealed class ReviewdRunnerTests
                 await run.Should().ThrowAsync<InvalidOperationException>().WithMessage("gateway hiccup");
                 var stopped = (await store.GetAsync<JsonObject>($"reviewd/review-attempt/{repo.NormalizedKey}/17"))!;
                 stopped["stage"]!.GetValue<string>().Should().Be("review-completed");
+                if (path is "resume-merged-checkpoint" or "resume-merged-running" or "resume-merged-stale-snapshot")
+                {
+                    // The controller last saved the running checkpoint; the host is authoritative for completion.
+                    stopped["stage"] = "review-running";
+                    stopped.Remove("reviewCompletedAt");
+                    stopped.Remove("reviewResponse");
+                    await store.SetAsync($"reviewd/review-attempt/{repo.NormalizedKey}/17", stopped);
+                }
                 // A new push lands: the PR's head and merge both move, and the saved snapshot sees the new head.
                 (liveHead, liveMerge) = (new string('d', 40), new string('e', 40));
-                await SnapshotAsync(liveHead, path == "resume-merged" ? "Merged" : "Open");
+                if (path == "resume-merged-stale-snapshot")
+                {
+                    await SnapshotAsync(reviewed);
+                }
+                else
+                {
+                    await SnapshotAsync(liveHead, path == "resume" ? "Open" : "Merged");
+                }
                 steps.Clear();
-                await ReviewRunner.RunAsync(
-                    Options("--resume"),
-                    config,
-                    client,
-                    Sandbox,
-                    CancellationToken.None,
-                    _ => Task.CompletedTask
-                );
+                var requestsBeforeResume = handler.Requests.Count;
+                var resumeRun = () =>
+                    ReviewRunner.RunAsync(
+                        Options("--resume"),
+                        config,
+                        client,
+                        Sandbox,
+                        CancellationToken.None,
+                        _ => Task.CompletedTask
+                    );
+                if (path == "resume-merged-running")
+                {
+                    await resumeRun
+                        .Should()
+                        .ThrowAsync<ReviewRunner.ReviewDeferredException>()
+                        .WithMessage("*has not completed*");
+                    steps
+                        .Should()
+                        .BeEmpty("no sandbox step can finish a closed PR while its original input is running");
+                    sends.Should().Be(1, "the controller must not send a replacement review or confirmation");
+                    return;
+                }
+                await resumeRun();
+                if (path is "resume-merged-checkpoint" or "resume-merged-stale-snapshot")
+                {
+                    handler
+                        .Requests.Skip(requestsBeforeResume)
+                        .First(request => request.Uri.AbsolutePath.EndsWith("/status", StringComparison.Ordinal))
+                        .Uri.Query.Should()
+                        .Be("?inputId=input1", "only the exact retained input can be reconciled");
+                }
             }
 
             var finished = (await store.GetAsync<JsonObject>($"reviewd/review-run/{repo.NormalizedKey}/17"))!;
@@ -7613,15 +7794,37 @@ public sealed class ReviewdRunnerTests
             finished["mergeSha"]!.GetValue<string>().Should().Be(prepared);
             if (mergesDuringPublication)
             {
-                var post = provider
-                    .Requests.Where(request => request.Method == HttpMethod.Post)
+                var writes = provider.Requests.Where(request => request.Method == HttpMethod.Post).ToArray();
+                writes
+                    .Select(request => request.Uri.AbsolutePath)
+                    .Should()
+                    .Equal("/" + inlineRoute, "/" + summaryRoute, "/" + bugRoute);
+                posted[summaryReadRoute]["body"]!
+                    .GetValue<string>()
+                    .Should()
+                    .StartWith("REQUEST_CHANGES")
+                    .And.Contain(reviewed);
+                provider
+                    .Requests.Where(request => request.Method == HttpMethod.Patch)
                     .Should()
                     .ContainSingle()
-                    .Which;
-                post.Uri.AbsolutePath.Should().Be("/" + summaryRoute);
-                JsonNode.Parse(post.Body!)!["body"]!.GetValue<string>().Should().Contain(reviewed).And.Contain(finding);
+                    .Which.Uri.AbsolutePath.Should()
+                    .Be("/" + summaryReadRoute);
+                posted["pulls/comments/6"]["body"]!.GetValue<string>().Should().Be(finding);
+                posted.ContainsKey("issues/18").Should().Be(!bugDenied);
+                if (!bugDenied)
+                {
+                    var created = (await github.GetFromJsonAsync<JsonObject>("issues/18"))!;
+                    created["body"]!
+                        .GetValue<string>()
+                        .Should()
+                        .Contain("https://github.com/org/Nova/pull/17")
+                        .And.Contain(bugMarker)
+                        .And.Contain(finding);
+                }
                 steps.TakeLast(3).Select(step => step.Split(' ')[0]).Should().Equal("verify", "commit", "cleanup");
                 var attempt = (await store.GetAsync<JsonObject>($"reviewd/review-attempt/{repo.NormalizedKey}/17"))!;
+                attempt["stage"]!.GetValue<string>().Should().Be("completed-verified");
                 attempt["cleanupState"]!.GetValue<string>().Should().Be("released");
                 var owner = (
                     await store.GetAsync<JsonObject>(SlotRelease.OwnerKey("workspace", repo.NormalizedKey, 2))
@@ -7632,6 +7835,10 @@ public sealed class ReviewdRunnerTests
                 ? new[] { "inspect", "verify", "commit" }
                 : ["inspect-prepared", "inspect", "verify", "commit"];
             var expected = finishing.Select(phase => $"{phase} {reviewed} {prepared} finished").ToList();
+            if (path == "resume-merged-stale-snapshot")
+            {
+                expected.Insert(0, $"inspect-prepared {reviewed} {prepared} reviewing");
+            }
             if (!resume)
             {
                 expected.InsertRange(0, ["prepare " + reviewed, $"inspect {reviewed} {prepared} reviewing"]);
@@ -7689,6 +7896,16 @@ public sealed class ReviewdRunnerTests
             );
             if (phase is "inspect" or "inspect-prepared" or "verify" or "commit")
             {
+                if (phase == "inspect-prepared" && !finished && path == "resume-merged-stale-snapshot")
+                {
+                    return ReviewRunner.Settle(
+                        phase,
+                        1,
+                        "",
+                        "review_common.ReviewError: PR_CLOSED: PR is not active.",
+                        operation
+                    );
+                }
                 if (!finished && (liveHead != args["head"]!.GetValue<string>() || liveMerge != prepared))
                 {
                     throw new InvalidOperationException("PR source or prepared merge changed; no submission allowed.");
@@ -7725,22 +7942,39 @@ public sealed class ReviewdRunnerTests
 
             if (phase == "verify" && mergesDuringPublication)
             {
-                var comment = publicationReceipt!;
-                var route = $"issues/comments/{comment["commentId"]}";
-                var readBack = await github.GetFromJsonAsync<JsonObject>(route, ct);
+                var readBack = new JsonObject();
+                foreach (var comment in publicationReceipts)
+                {
+                    var route = comment!["commentType"]!.GetValue<string>() switch
+                    {
+                        "issue_comment" => $"issues/comments/{comment["commentId"]}",
+                        "review" => $"pulls/17/reviews/{comment["commentId"]}",
+                        _ => $"pulls/comments/{comment["commentId"]}",
+                    };
+                    readBack[route] = await github.GetFromJsonAsync<JsonObject>(route, ct);
+                }
                 var publication = new JsonObject
                 {
-                    ["comments"] = new JsonArray(comment.DeepClone()),
-                    ["live"] = new JsonObject { [route] = readBack },
+                    ["comments"] = publicationReceipts.DeepClone(),
+                    ["live"] = readBack,
+                    ["closedAt"] = closedAt,
+                    ["head"] = reviewed,
                 };
                 var verified = await ReviewdSummaryReplyTests.RunAsync(
                     python!,
-                    ["GITHUB_COMMENTS", "github_belongs", "github_reply_wrapper", "same_text", "github_verify"],
-                    "passes(lambda: github_verify(c['comments'], c['live'].get, []))",
+                    [
+                        "GITHUB_COMMENTS",
+                        "github_belongs",
+                        "github_reply_wrapper",
+                        "same_text",
+                        "summary_head_matches",
+                        "github_verify",
+                    ],
+                    "passes(lambda: github_verify(c['comments'], c['live'].get, [], c['closedAt'], c['head']))",
                     new JsonArray(publication).ToJsonString()
                 );
                 verified.Should().Equal(true);
-                return new JsonObject { ["comments"] = new JsonArray(comment) };
+                return new JsonObject { ["comments"] = publicationReceipts.DeepClone() };
             }
             var json = phase switch
             {

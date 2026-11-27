@@ -1,5 +1,6 @@
 """Executed only through Gateway; uses the installed review-setup helpers."""
 import atexit
+import datetime
 import hashlib
 import json
 import os
@@ -242,8 +243,11 @@ def live_merge(current, args):
     # confirmation, verify or archive. A closed PR can still receive a conversation summary for that revision.
     finished = args.get('reviewFinished')
     open_for_review = current['status'] == 'active' and current['isDraft'] is False
-    closed_after_review = finished and current['status'] in ('completed', 'abandoned')
+    closed = current['status'] in ('completed', 'abandoned')
+    closed_after_review = finished and closed
     if not (open_for_review or closed_after_review):
+        if closed:
+            raise ReviewError('PR_CLOSED: PR is not active in the requested repository.')
         raise ReviewError('PR is not active/non-draft in the requested repository.')
     if finished:
         merge = args.get('merge')
@@ -294,7 +298,21 @@ def same_text(posted, recorded):
     return isinstance(posted, str) and posted.replace('\r\n', '\n') == recorded.replace('\r\n', '\n')
 
 
-def github_verify(comments, read, baseline):
+def summary_head_matches(content, posted_at, closed_at, head):
+    # Provider timestamps decide whether this summary was posted after closure. Equal timestamps can be
+    # ambiguous at second resolution. Earlier summaries still follow the open-PR publication contract.
+    if not isinstance(posted_at, str) or not isinstance(closed_at, str):
+        return True
+    try:
+        late = datetime.datetime.fromisoformat(posted_at.replace('Z', '+00:00')) > datetime.datetime.fromisoformat(
+            closed_at.replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return True
+    return not late or re.search(
+        rf'\bReviewed commit\s+`?{re.escape(head)}(?![0-9a-f])', content, re.IGNORECASE) is not None
+
+
+def github_verify(comments, read, baseline, closed_at=None, head=None):
     # A GitHub summary is a top-level PR comment or a review body. Each round posts its own, so there is no
     # reply-in-thread summary to recognise. Returns the verified entries; raises when any cannot be verified.
     verified, seen, summarized, wrappers, holders = [], set(), False, [], set()
@@ -314,7 +332,11 @@ def github_verify(comments, read, baseline):
             raise ReviewError('Publication could not be independently verified.')
         if kind == 'review_comment':
             holders.add(posted.get('pull_request_review_id'))
-        summarized = summarized or (comment.get('kind') == 'summary' and kind in ('issue_comment', 'review'))
+        if comment.get('kind') == 'summary' and kind in ('issue_comment', 'review'):
+            if closed_at is not None and not summary_head_matches(
+                    content, posted.get('created_at') or posted.get('submitted_at'), closed_at, head):
+                raise ReviewError('A summary posted after PR closure must name the full reviewed head.')
+            summarized = True
         verified.append({'commentType': kind, 'commentId': comment_id, 'kind': comment.get('kind'),
                          'contentSha256': hashlib.sha256(content.encode()).hexdigest()})
     if not summarized:
@@ -324,6 +346,36 @@ def github_verify(comments, read, baseline):
     # inline comment). Without this a lost inline comment passed verify on its empty wrapper alone (#910).
     if any(type(wrapper) is not int or wrapper not in holders for wrapper in wrappers):
         raise ReviewError('An empty review wrapper has no verified review comment of its own in the receipt.')
+    return verified
+
+
+def ado_verify(comments, read_thread, baseline, summary_threads, closed_at, head):
+    verified, seen, summarized = [], set(), False
+    for comment in comments:
+        thread_id, comment_id = comment.get('threadId'), comment.get('commentId')
+        if (type(thread_id) is not int or thread_id <= 0 or type(comment_id) is not int or comment_id <= 0
+                or (thread_id, comment_id) in seen or [thread_id, comment_id] in baseline):
+            raise ReviewError('Publication IDs invalid, duplicated, or already present before this review.')
+        seen.add((thread_id, comment_id))
+        thread = read_thread(thread_id)
+        posted = next((c for c in thread.get('comments', []) if c.get('id') == comment_id), None)
+        if (thread.get('id') != thread_id or thread.get('isDeleted') or posted is None
+                or posted.get('isDeleted') or posted.get('content') != comment.get('content')
+                or not isinstance(comment.get('content'), str) or not comment['content'].strip()):
+            raise ReviewError('Publication could not be independently verified.')
+        kind = comment.get('kind')
+        if kind == 'summary':
+            if not summary_head_matches(posted['content'], posted.get('publishedDate'), closed_at, head):
+                raise ReviewError('A summary posted after PR closure must name the full reviewed head.')
+            summarized = True
+        elif kind == 'reply' and not summarized and summary_reply(thread, posted, summary_threads):
+            # A reply in an earlier summary thread can count as this round's summary. An additional reply
+            # can be a correction, so lacking the full head only disqualifies it as the summary candidate.
+            summarized = summary_head_matches(posted['content'], posted.get('publishedDate'), closed_at, head)
+        verified.append({'threadId': thread_id, 'commentId': comment_id, 'kind': kind,
+                         'contentSha256': hashlib.sha256(posted['content'].encode()).hexdigest()})
+    if not summarized:
+        raise ReviewError('Publication receipt must include a posted summary.')
     return verified
 
 
@@ -946,29 +998,15 @@ elif phase == 'verify':
         raise ReviewError('Publication receipt must include a posted summary.')
     payload, _ = live()
     if github:
-        print(json.dumps({'comments': github_verify(comments, client.request, args['baselineComments'])}))
+        closed_at = payload.get('closed_at') if payload.get('state') == 'closed' else None
+        print(json.dumps({'comments': github_verify(comments, client.request, args['baselineComments'],
+                                                     closed_at, args['head'])}))
         sys.exit(0)
     api = ado_pr_api(payload)
-    verified, seen, summarized = [], set(), False
     summary_threads = set(args.get('summaryThreads') or [])
-    for comment in comments:
-        thread_id, comment_id = comment.get('threadId'), comment.get('commentId')
-        if (type(thread_id) is not int or thread_id <= 0 or type(comment_id) is not int or comment_id <= 0
-                or (thread_id, comment_id) in seen or [thread_id, comment_id] in args['baselineComments']):
-            raise ReviewError('Publication IDs invalid, duplicated, or already present before this review.')
-        seen.add((thread_id, comment_id))
-        thread = transport.request('GET', api + f'/threads/{thread_id}?api-version=7.1')
-        posted = next((c for c in thread.get('comments', []) if c.get('id') == comment_id), None)
-        if (thread.get('id') != thread_id or thread.get('isDeleted') or posted is None
-                or posted.get('isDeleted') or posted.get('content') != comment.get('content')
-                or not isinstance(comment.get('content'), str) or not comment['content'].strip()):
-            raise ReviewError('Publication could not be independently verified.')
-        summarized = summarized or comment.get('kind') == 'summary' or (
-            comment.get('kind') == 'reply' and summary_reply(thread, posted, summary_threads))
-        verified.append({'threadId': thread_id, 'commentId': comment_id, 'kind': comment.get('kind'),
-                         'contentSha256': hashlib.sha256(posted['content'].encode()).hexdigest()})
-    if not summarized:
-        raise ReviewError('Publication receipt must include a posted summary.')
+    closed_at = payload.get('closedDate') if payload.get('status') in ('completed', 'abandoned') else None
+    verified = ado_verify(comments, lambda tid: transport.request('GET', api + f'/threads/{tid}?api-version=7.1'),
+                          args['baselineComments'], summary_threads, closed_at, args['head'])
     print(json.dumps({'comments': verified}))
 elif phase == 'commit':
     inspect_prepared()

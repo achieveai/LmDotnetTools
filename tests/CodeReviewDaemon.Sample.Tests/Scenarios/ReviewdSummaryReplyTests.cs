@@ -19,6 +19,98 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
 
     private readonly string _database = Path.Combine(Path.GetTempPath(), $"reviewd-summary-{Guid.NewGuid():N}.db");
 
+    [SkippableFact]
+    public async Task Verify_requires_the_full_reviewed_head_in_a_summary_posted_after_closure()
+    {
+        var python = await FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox verifier cannot be run");
+        var reviewed = new string('a', 40);
+        const string closed = "2026-01-15T12:00:00Z";
+        const string late = "2026-01-15T12:00:01Z";
+        JsonObject Case(string body, string posted, string? closedAt = closed) =>
+            new()
+            {
+                ["head"] = reviewed,
+                ["closedAt"] = closedAt,
+                ["comments"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["commentType"] = "issue_comment",
+                        ["commentId"] = 5,
+                        ["kind"] = "summary",
+                        ["content"] = body,
+                    }
+                ),
+                ["posted"] = new JsonObject
+                {
+                    ["id"] = 5,
+                    ["issue_url"] = "https://api.github.test/repos/org/Nova/issues/17",
+                    ["body"] = body,
+                    ["created_at"] = posted,
+                },
+            };
+        var cases = new JsonArray(
+            Case($"REQUEST_CHANGES\n\nReviewed commit `{reviewed}`.", late),
+            Case("REQUEST_CHANGES", late),
+            Case($"REQUEST_CHANGES\n\nReviewed commit {reviewed[..8]}.", late),
+            Case($"REQUEST_CHANGES\n\nReviewed commit {new string('b', 40)}.", late),
+            Case("APPROVE", "2026-01-15T11:59:59Z"),
+            Case("APPROVE", closed),
+            Case("APPROVE", late, null)
+        );
+
+        var results = await RunAsync(
+            python!,
+            [
+                "GITHUB_COMMENTS",
+                "github_belongs",
+                "github_reply_wrapper",
+                "same_text",
+                "summary_head_matches",
+                "github_verify",
+            ],
+            "passes(lambda: github_verify(c['comments'], lambda path: c['posted'], [], c['closedAt'], c['head']))",
+            cases.ToJsonString()
+        );
+
+        results.Should().Equal(true, false, false, false, true, true, true);
+    }
+
+    [SkippableFact]
+    public async Task Ado_verify_keeps_a_preclosure_summary_when_a_late_reply_corrects_its_verdict()
+    {
+        var python = await FindPythonAsync();
+        Skip.If(python is null, "no Python interpreter on PATH, so the sandbox verifier cannot be run");
+        var reviewed = new string('a', 40);
+        var combined = JsonNode
+            .Parse(
+                """
+                {"thread":{"id":7,"comments":[
+                  {"id":1,"author":{"id":"reviewer"}},
+                  {"id":2,"author":{"id":"reviewer"},"parentCommentId":1,"publishedDate":"2026-01-15T11:59:59Z","content":"APPROVE"},
+                  {"id":3,"author":{"id":"reviewer"},"parentCommentId":2,"publishedDate":"2026-01-15T12:00:01Z","content":"REQUEST_CHANGES"}
+                ]},"comments":[
+                  {"threadId":7,"commentId":3,"kind":"reply","content":"REQUEST_CHANGES"},
+                  {"threadId":7,"commentId":2,"kind":"reply","content":"APPROVE"}
+                ]}
+                """
+            )!
+            .AsObject();
+        var onlyCorrection = combined.DeepClone().AsObject();
+        onlyCorrection["comments"]!.AsArray().RemoveAt(1);
+        var lateSummary = onlyCorrection.DeepClone().AsObject();
+        lateSummary["thread"]!["comments"]![2]!["content"] = $"REQUEST_CHANGES\nReviewed commit {reviewed}";
+        lateSummary["comments"]![0]!["content"] = $"REQUEST_CHANGES\nReviewed commit {reviewed}";
+
+        var verified = await RunAsync(
+            python!,
+            ["summary_reply", "summary_head_matches", "ado_verify"],
+            $"passes(lambda: ado_verify(c['comments'], lambda tid: c['thread'], [[7, 1]], {{7}}, '2026-01-15T12:00:00Z', '{reviewed}'))",
+            new JsonArray(combined, onlyCorrection, lateSummary).ToJsonString()
+        );
+        verified.Should().Equal(true, false, true);
+    }
+
     [Fact]
     public async Task Prior_summary_threads_come_only_from_this_PRs_verified_summaries()
     {
@@ -392,7 +484,7 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
         try
         {
             const string harness = """
-                import ast, hashlib, json, re, sys
+                import ast, datetime, hashlib, json, re, sys
                 tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
                 names, expression = sys.argv[2].split(','), sys.argv[3]
                 def named(node):
@@ -410,7 +502,8 @@ public sealed class ReviewdSummaryReplyTests : IDisposable
                         return True
                     except ReviewError:
                         return False
-                scope = {'pr': 17, 'hashlib': hashlib, 'json': json, 're': re, 'ReviewError': ReviewError, 'passes': passes}
+                scope = {'pr': 17, 'datetime': datetime, 'hashlib': hashlib, 'json': json, 're': re,
+                         'ReviewError': ReviewError, 'passes': passes}
                 exec(compile(ast.Module(lifted, []), 'rules', 'exec'), scope)
                 call = eval('lambda c: ' + expression, scope)
                 cases = json.loads(sys.stdin.read())
