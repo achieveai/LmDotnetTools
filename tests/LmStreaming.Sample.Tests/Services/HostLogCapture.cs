@@ -9,7 +9,7 @@ namespace LmStreaming.Sample.Tests.Services;
 /// Keeps every event the test host logs, and lets a test wait for one. The host's Serilog setup reads sinks from its
 /// services, so <see cref="Install"/> is all a test host needs.
 /// </summary>
-internal sealed class HostLogCapture : ILogEventSink
+internal sealed class HostLogCapture(Action<LogEvent>? onEvent = null) : ILogEventSink
 {
     private readonly ConcurrentQueue<LogEvent> _events = new();
     private readonly ConcurrentQueue<(Func<LogEvent, bool> Match, TaskCompletionSource<LogEvent> Seen)> _waiters =
@@ -18,9 +18,9 @@ internal sealed class HostLogCapture : ILogEventSink
     public IReadOnlyList<LogEvent> Events => [.. _events];
 
     /// <summary>Adds a capture to the host's services.</summary>
-    public static HostLogCapture Install(IServiceCollection services)
+    public static HostLogCapture Install(IServiceCollection services, Action<LogEvent>? onEvent = null)
     {
-        var capture = new HostLogCapture();
+        var capture = new HostLogCapture(onEvent);
         services.AddSingleton<ILogEventSink>(capture);
         return capture;
     }
@@ -35,6 +35,8 @@ internal sealed class HostLogCapture : ILogEventSink
                 _ = seen.TrySetResult(logEvent);
             }
         }
+
+        onEvent?.Invoke(logEvent);
     }
 
     /// <summary>The first event, logged from now on, whose template is <paramref name="template"/> and whose

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **LmStreaming: committed conversation deletes finish after cancellation.** Once the sandbox registry
+  commits a delete, the host finishes it even if the caller stops waiting. This also applies when the
+  registry finds no sandboxes. A conversation with forks is hidden so they can still read inherited messages.
+
 - **LmStreaming: a sandbox release refuses a mode switch it sees land, and a failed workspace destroy no longer forgets
   a released sandbox.** The release route now checks the conversation's mode again in the same step that stores the
   move (a compare-and-set on the stored mode id, up to three tries). When a switch into a Mini App debugging or browser

@@ -348,6 +348,97 @@ public class ConversationsControllerTests
         pool.GetAgentMode(threadId).Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task Delete_CallerCancellation_StopsBeforeCommitAndFinishesAfterAnEmptyRegistryCommits(
+        bool callerCancels,
+        bool hostHasRegistry
+    )
+    {
+        const string threadId = "thread-delete-without-registry";
+        var backing = new InMemoryConversationStore();
+        var metadata = new ThreadMetadata { ThreadId = threadId, LastUpdated = 1 };
+        var message = MessagePersistenceConverter.ToPersistedMessage(
+            new TextMessage { Role = Role.User, Text = "Keep unless deleted" },
+            threadId,
+            "run-1"
+        );
+        await backing.SaveMetadataAsync(threadId, metadata);
+        await backing.AppendMessagesAsync(threadId, [message]);
+        var persisted = (await backing.LoadMessagesAsync(threadId)).Should().ContainSingle().Which;
+
+        using var caller = new CancellationTokenSource();
+        var store = new Mock<IConversationStore>(MockBehavior.Strict);
+        store
+            .Setup(s => s.LoadMetadataAsync(threadId, It.IsAny<CancellationToken>()))
+            .Returns(
+                async (string id, CancellationToken token) =>
+                {
+                    var loaded = await backing.LoadMetadataAsync(id, token);
+                    if (callerCancels && !hostHasRegistry)
+                    {
+                        await caller.CancelAsync();
+                    }
+
+                    return loaded;
+                }
+            );
+        store
+            .Setup(s => s.ListThreadsAsync(int.MaxValue, 0, null, It.IsAny<CancellationToken>()))
+            .Returns(
+                async (int limit, int offset, ConversationListOptions? options, CancellationToken token) =>
+                {
+                    // With the registry configured, this lookup begins only after its delete has committed.
+                    if (callerCancels && hostHasRegistry)
+                    {
+                        await caller.CancelAsync();
+                    }
+
+                    token.ThrowIfCancellationRequested();
+                    return await backing.ListThreadsAsync(limit, offset, options, token);
+                }
+            );
+        store
+            .Setup(s => s.DeleteThreadAsync(threadId, It.IsAny<CancellationToken>()))
+            .Returns((string id, CancellationToken token) => backing.DeleteThreadAsync(id, token));
+        await using var pool = CreatePool();
+        using var workspace = hostHasRegistry ? new SandboxEnvTestSupport.TempWorkspaceBase() : null;
+        await using var registry = workspace is null
+            ? null
+            : SandboxEnvTestSupport.CreateRegistry(workspace.Path, out _);
+        var controller = CreateController(
+            store.Object,
+            pool,
+            ModeStoreResolvingSystemModes(),
+            sandboxSessionRegistry: registry
+        );
+
+        if (callerCancels && !hostHasRegistry)
+        {
+            await FluentActions
+                .Awaiting(() => controller.Delete(threadId, caller.Token))
+                .Should()
+                .ThrowAsync<OperationCanceledException>();
+            store.Verify(s => s.DeleteThreadAsync(threadId, It.IsAny<CancellationToken>()), Times.Never);
+            (await backing.LoadMetadataAsync(threadId)).Should().BeEquivalentTo(metadata);
+            (await backing.LoadMessagesAsync(threadId))
+                .Should()
+                .ContainSingle()
+                .Which.Should()
+                .BeEquivalentTo(persisted);
+        }
+        else
+        {
+            (await controller.Delete(threadId, caller.Token)).Should().BeOfType<NoContentResult>();
+            caller.IsCancellationRequested.Should().Be(callerCancels);
+            store.Verify(s => s.ListThreadsAsync(int.MaxValue, 0, null, It.IsAny<CancellationToken>()), Times.Once);
+            (await backing.LoadMetadataAsync(threadId)).Should().BeNull();
+            (await backing.LoadMessagesAsync(threadId)).Should().BeEmpty();
+        }
+    }
+
     [Fact]
     public async Task List_ExcludesSubAgentThreads_FromTheConversationSidebar()
     {
