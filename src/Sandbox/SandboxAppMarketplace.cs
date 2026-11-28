@@ -2,7 +2,7 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 
 /// <summary>
 /// One git marketplace this client's app registered with the gateway (ADR 0045), as
-/// <see cref="SandboxClient.RegisterAppMarketplaceAsync"/>, <see cref="SandboxClient.ListAppMarketplacesAsync"/>
+/// <see cref="SandboxClient.RegisterAppMarketplaceAsync(string, string, string, CancellationToken)"/>, <see cref="SandboxClient.ListAppMarketplacesAsync"/>
 /// and <see cref="SandboxClient.SyncAppMarketplaceAsync"/> report it. A sandbox mounts it at
 /// <c>/marketplaces/&lt;alias&gt;/</c>, at the commit <see cref="ResolvedSha"/> named when the sandbox was created.
 /// </summary>
@@ -46,6 +46,42 @@ public sealed record SandboxAppMarketplace
     /// The previous commit stays in use while this is set.
     /// </summary>
     public string? LastError { get; init; }
+
+    /// <summary>
+    /// Redacted rendering — never prints <see cref="Url"/> (a private repository's URL names the private team or
+    /// project) or the gateway's free-text <see cref="LastError"/>. The properties themselves are unchanged.
+    /// </summary>
+    public override string ToString() =>
+        $"SandboxAppMarketplace {{ AppId = {AppId}, Alias = {Alias}, Url = [REDACTED], RepoKey = {RepoKey}, "
+        + $"Ref = {Ref}, ResolvedSha = {ResolvedSha}, Plugin = {Plugin}, CreatedAt = {CreatedAt}, "
+        + $"UpdatedAt = {UpdatedAt}, LastError = {(LastError is null ? null : "[REDACTED]")} }}";
+}
+
+/// <summary>
+/// What <see cref="SandboxClient.RegisterAppMarketplaceAsync(string, SandboxAppMarketplaceRegistration, CancellationToken)"/>
+/// sends: a repository URL, an optional ref and, for a private GitHub or Azure DevOps repository, an opaque
+/// <see cref="ConnectionId"/>. The connection id is a reference the host's own credential broker understands; it is
+/// never a provider token. Provider tokens, refresh tokens and the broker's callback URL stay with the host and the
+/// gateway operator's configuration, never in this request.
+/// </summary>
+public sealed record SandboxAppMarketplaceRegistration
+{
+    /// <summary>The repository's exact <c>https</c> clone URL. Sent as given: a literal <c>.git</c> suffix is kept.</summary>
+    public required string Url { get; init; }
+
+    /// <summary>A tag, branch or commit to pin, or <see langword="null"/> for <c>latest</c>.</summary>
+    public string? Ref { get; init; }
+
+    /// <summary>
+    /// The host's connection id for a private repository: 1 to 128 characters of <c>[A-Za-z0-9_.-]</c>, or
+    /// <see langword="null"/> for a public repository (the field is then omitted).
+    /// </summary>
+    public string? ConnectionId { get; init; }
+
+    /// <summary>Redacted rendering — never prints <see cref="Url"/> or <see cref="ConnectionId"/>.</summary>
+    public override string ToString() =>
+        $"SandboxAppMarketplaceRegistration {{ Url = [REDACTED], Ref = {Ref}, "
+        + $"ConnectionId = {(ConnectionId is null ? null : "[REDACTED]")} }}";
 }
 
 /// <summary>A signed app's registration of one publisher archive, with the download and staged content digests.</summary>

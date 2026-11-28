@@ -104,6 +104,9 @@ public sealed class SandboxClientPluginPreparationTests
     [Theory]
     [InlineData("""{"status":"ready","recipe":{"effective":[{"marketplace":"team","plugin":"chosen"}]}}""")]
     [InlineData("""{"status":"unversioned","sourceReceipt":{"recipe":{"effective":null}}}""")]
+    [InlineData(
+        """{"status":"unversioned","error_code":"source_snapshot_unsupported","exactRepeatSupported":false,"recipe":{"effective":[{"marketplace":"team","plugin":"chosen"}]}}"""
+    )]
     [InlineData("""{"status":"ready","sourceReceipt":{"recipe":{"effective":[{"marketplace":"team"}]}}}""")]
     [InlineData(
         """{"status":"ready","sourceReceipt":{"recipe":{"effective":[{"marketplace":"team","plugin":"other"}]}}}"""
@@ -146,8 +149,11 @@ public sealed class SandboxClientPluginPreparationTests
     }
 
     [Fact]
-    public async Task PrepareMarketplacePluginSelectionAsync_StopsWhenTheGatewayChangesThePendingId()
+    public async Task PrepareMarketplacePluginSelectionAsync_FollowsARestoredPendingId()
     {
+        // The gateway's status route may restore an evicted capture under a new operation id (as PrepareSourcesAsync
+        // follows it); the selection call shares that handling, so it polls the restored id rather than failing.
+        const string restored = "aaf81083-fdb8-4bd0-b33f-ca04ef220e2b";
         var (client, handler) = TestSupport.CreateBorrowedClient();
         handler.OnJson(
             HttpMethod.Post,
@@ -158,13 +164,25 @@ public sealed class SandboxClientPluginPreparationTests
         handler.OnJson(
             HttpMethod.Get,
             $"{Path}/{OperationId}",
-            """{"status":"preparing","operationId":"aaf81083-fdb8-4bd0-b33f-ca04ef220e2b"}"""
+            $$"""{"status":"preparing","operationId":"{{restored}}"}"""
+        );
+        handler.OnJson(
+            HttpMethod.Get,
+            $"{Path}/{restored}",
+            """{"status":"ready","sourceReceipt":{"recipe":{"effective":[{"marketplace":"team","plugin":"chosen"}]}}}"""
         );
 
-        Func<Task> prepare = () => client.PrepareMarketplacePluginSelectionAsync(["team"], [new("team", "chosen")]);
+        var effective = await client.PrepareMarketplacePluginSelectionAsync(["team"], [new("team", "chosen")]);
 
-        (await prepare.Should().ThrowAsync<SandboxException>()).Which.Kind.Should().Be(SandboxErrorKind.Protocol);
-        handler.Requests.Should().HaveCount(2);
+        effective.Select(plugin => (plugin.Marketplace, plugin.Plugin)).Should().Equal(("team", "chosen"));
+        handler
+            .Requests.Select(request => (request.Method, request.Uri.AbsolutePath))
+            .Should()
+            .Equal(
+                (HttpMethod.Post, Path),
+                (HttpMethod.Get, $"{Path}/{OperationId}"),
+                (HttpMethod.Get, $"{Path}/{restored}")
+            );
     }
 
     [Fact]

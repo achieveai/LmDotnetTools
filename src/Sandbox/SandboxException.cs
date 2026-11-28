@@ -9,9 +9,11 @@ namespace AchieveAi.LmDotnetTools.Sandbox;
 /// <remarks>
 /// The message is always built from information that is safe to surface to callers/logs: the
 /// gateway response status code, the closed-vocabulary <c>error_code</c>, and the local operation being
-/// attempted. It never echoes a REST error body's free-text <c>error</c> field, never reads a
-/// <c>401</c>/<c>403</c> body at all (an auth rejection is the upstream output most likely to include
-/// credential material), and never includes any <see cref="SandboxClientOptions.ClientSecret"/>-derived
+/// attempted. It never echoes a REST error body's free-text <c>error</c> field, never reads a <c>401</c>
+/// body or a direct-API <c>401</c>/<c>403</c> body at all (an auth rejection is the upstream output most likely to
+/// include credential material), reads a control-plane <c>403</c> body only up to 4 KiB plus one overflow probe byte and keeps nothing from it
+/// but an allowlisted <c>error_code</c> (<c>marketplace_access_denied</c>), and never includes any
+/// <see cref="SandboxClientOptions.ClientSecret"/>-derived
 /// value. A JSON-RPC error's <c>message</c> is never included either (<see cref="SandboxErrorKind.McpCallFailed"/>
 /// carries only <see cref="JsonRpcCode"/>), and neither is a failed operation's free-text <c>error</c>
 /// (<see cref="SandboxErrorKind.OperationFailed"/> / <see cref="SandboxErrorKind.ExecutableNotRunnable"/> carry
@@ -31,20 +33,31 @@ public sealed class SandboxException : Exception
     public int? StatusCode { get; }
 
     /// <summary>
-    /// The resolved operation id of a command execution — the handle that IDENTIFIES which operation
-    /// failed. <c>null</c> for failures with no operation at all (control-plane calls, or failures that
-    /// occur before an operation id is resolved). It is a caller-supplied or SDK-generated identifier,
-    /// never secret-bearing.
+    /// The operation id that IDENTIFIES which operation failed. It carries one of two kinds of id:
+    /// <list type="bullet">
+    /// <item>a <b>command</b> id: the resolved id of a command execution, caller-supplied or SDK-generated;</item>
+    /// <item>a <b>source-preparation</b> id: the id the gateway assigned to an accepted preparation
+    /// (<see cref="SandboxClient.PrepareSourcesAsync"/>, <see cref="SandboxClient.ResumeSourcePreparationAsync"/> and the
+    /// plugin and archive selection calls).</item>
+    /// </list>
+    /// <c>null</c> for failures with no operation at all (other control-plane calls, or failures that occur before an
+    /// operation id is resolved). Never secret-bearing.
     /// </summary>
     /// <remarks>
-    /// A non-null id does NOT by itself mean the failure is recoverable — recoverability depends on
-    /// <see cref="Kind"/>. The id is stamped on every failure of a command that has one, INCLUDING
-    /// deterministic ones such as <see cref="SandboxErrorKind.Authorization"/> (a <c>401</c>/<c>403</c>)
-    /// and a refused redirect, where re-issuing the same command would simply fail the same way. Branch on
-    /// <see cref="Kind"/> first and re-issue only for the AMBIGUOUS failures — chiefly
-    /// <see cref="SandboxErrorKind.TransportTimeout"/> (the response was lost, so the command may or may
-    /// not have run) and <see cref="SandboxErrorKind.Unavailable"/> — then use this id so the gateway
-    /// replays the existing operation instead of running a side-effecting command a second time.
+    /// A non-null id identifies an operation; it does not guarantee recovery. The id is stamped on every failure of an
+    /// operation that has one, INCLUDING deterministic ones such as <see cref="SandboxErrorKind.Authorization"/> (a
+    /// <c>401</c>/<c>403</c>) and a refused redirect. How to use it depends on the kind of id:
+    /// <list type="bullet">
+    /// <item>a command id: branch on <see cref="Kind"/> and re-issue the command with this id only after AMBIGUOUS
+    /// failures, chiefly <see cref="SandboxErrorKind.TransportTimeout"/> (the response was lost, so the command may or
+    /// may not have run) and <see cref="SandboxErrorKind.Unavailable"/>. The gateway then replays the existing
+    /// operation instead of running a side-effecting command a second time.</item>
+    /// <item>a source-preparation id: <see cref="SandboxClient.ResumeSourcePreparationAsync"/> polls the same app's
+    /// existing operation by GET without another POST. That includes after a <see cref="SandboxErrorKind.Protocol"/>
+    /// failure from a malformed HTTP <c>202</c> that carried a validated id. It is never a command id to replay.</item>
+    /// </list>
+    /// An id is not a reason to retry an authorization rejection, a refused redirect, or a terminal preparation failure
+    /// unchanged.
     /// </remarks>
     public string? OperationId { get; }
 
@@ -52,8 +65,8 @@ public sealed class SandboxException : Exception
     /// The gateway's stable, machine-readable <c>error_code</c> from a non-2xx error body (e.g.
     /// <c>path_not_found</c>, <c>session_not_found</c>, <c>image_not_found</c>, <c>workspace_purged</c>) or
     /// from a failed operation's status (e.g. <c>executable_not_runnable</c>), when the gateway sent one.
-    /// <c>null</c> for auth rejections (whose body is deliberately never read) and any response with no
-    /// machine-readable body.
+    /// <c>null</c> for auth rejections (a <c>401</c> body is never read, and a <c>403</c> keeps only the
+    /// allowlisted <c>marketplace_access_denied</c>) and any response with no machine-readable body.
     /// It is a closed, gateway-defined vocabulary — safe to surface and branch on, like a JSON-RPC error
     /// <c>code</c> — so a caller can distinguish, for example, a genuinely missing PATH from an evicted
     /// SESSION even though both classify as <see cref="SandboxErrorKind.NotFound"/>. Never the gateway's

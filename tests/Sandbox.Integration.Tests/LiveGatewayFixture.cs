@@ -35,6 +35,16 @@ public sealed class LiveGatewayFixture : IAsyncLifetime
     /// <summary>The authenticated app id in play, echoed back by the gateway on create responses.</summary>
     public string AppId { get; private set; } = string.Empty;
 
+    /// <summary>The options <see cref="Client"/> was built from, for a test that needs its own transport.</summary>
+    public SandboxClientOptions Options { get; private set; } = null!;
+
+    /// <summary>
+    /// A client for a SECOND app registered on the same gateway (<c>SANDBOX_APP_B_ID</c> /
+    /// <c>SANDBOX_APP_B_KEY</c>), or <see langword="null"/> when those are not set. Only the app-isolation
+    /// contracts need it; they fail, never skip, without it when <see cref="ContractRequired"/> is set.
+    /// </summary>
+    public SandboxClient? SecondClient { get; private set; }
+
     /// <summary>
     /// True when <c>SANDBOX_CONTRACT_REQUIRED</c> is set: a test whose precondition the live gateway cannot meet
     /// must then fail, never skip, exactly like a missing gateway.
@@ -42,6 +52,7 @@ public sealed class LiveGatewayFixture : IAsyncLifetime
     public bool ContractRequired { get; private set; }
 
     private SandboxClient? _ownedClient;
+    private SandboxClient? _ownedSecondClient;
 
     public async Task InitializeAsync()
     {
@@ -118,12 +129,46 @@ public sealed class LiveGatewayFixture : IAsyncLifetime
         _ownedClient = new SandboxClient(options);
         Client = _ownedClient;
         AppId = appId;
+        Options = options;
+
+        var secondAppId = Trimmed(Environment.GetEnvironmentVariable("SANDBOX_APP_B_ID"));
+        var secondAppKey = Trimmed(Environment.GetEnvironmentVariable("SANDBOX_APP_B_KEY"));
+        if (secondAppId.Length > 0 && secondAppKey.Length > 0)
+        {
+            // A malformed second key is a configuration error of the run that set it: let it fail loudly.
+            _ownedSecondClient = new SandboxClient(
+                new SandboxClientOptions(
+                    serverAddress,
+                    secondAppId,
+                    secondAppKey,
+                    options.ExecutionTimeout,
+                    options.TransportTimeout,
+                    isHttp
+                )
+            );
+            SecondClient = _ownedSecondClient;
+        }
     }
 
     public Task DisposeAsync()
     {
         _ownedClient?.Dispose();
+        _ownedSecondClient?.Dispose();
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Skips (locally) or fails (when <see cref="ContractRequired"/>) a test whose extra live precondition is missing.
+    /// </summary>
+    public void RequirePrecondition(bool available, string reason)
+    {
+        if (available)
+        {
+            return;
+        }
+
+        Skip.IfNot(ContractRequired, reason);
+        throw new InvalidOperationException(reason + " SANDBOX_CONTRACT_REQUIRED forbids skipping.");
     }
 
     private void Unavailable(bool required, string reason)

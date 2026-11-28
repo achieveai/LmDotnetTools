@@ -31,7 +31,8 @@ internal static class TestSupport
         TimeSpan? transportTimeout = null,
         string appId = "app-1",
         string? clientSecret = null,
-        TimeSpan? executionTimeout = null
+        TimeSpan? executionTimeout = null,
+        TimeProvider? clock = null
     )
     {
         var handler = new FakeGatewayHandler();
@@ -44,7 +45,7 @@ internal static class TestSupport
             executionTimeout ?? TimeSpan.FromMinutes(5),
             transportTimeout ?? TimeSpan.FromSeconds(30)
         );
-        var client = new SandboxClient(options, httpClient);
+        var client = new SandboxClient(options, httpClient) { TransportClock = clock ?? TimeProvider.System };
         return (client, handler);
     }
 

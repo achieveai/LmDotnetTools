@@ -8,7 +8,9 @@ namespace AchieveAi.LmDotnetTools.Sandbox.Wire;
 internal sealed record AppMarketplaceRegisterDto(
     [property: JsonPropertyName("url")] string Url,
     [property: JsonPropertyName("ref")] string? Ref,
-    [property: JsonPropertyName("plugin")] string? Plugin = null
+    [property: JsonPropertyName("plugin")] string? Plugin = null,
+    // A private repository's opaque connection reference (gateway PR #375). Omitted when null.
+    [property: JsonPropertyName("connectionId")] string? ConnectionId = null
 );
 
 internal sealed record AppMarketplaceArchiveRegisterDto(

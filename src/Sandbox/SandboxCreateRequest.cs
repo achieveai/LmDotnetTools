@@ -18,7 +18,7 @@ public sealed class SandboxCreateRequest
     /// Marketplace aliases to activate for this sandbox, defensively copied at construction. By default
     /// empty means "omit the field" so the gateway applies its own default set ("caller expressed no
     /// preference"). Since gateway ADR 0045 that default is the operator set PLUS every git marketplace the
-    /// app registered (<see cref="SandboxClient.RegisterAppMarketplaceAsync"/>). To mount NO marketplaces,
+    /// app registered (<see cref="SandboxClient.RegisterAppMarketplaceAsync(string, string, string, CancellationToken)"/>). To mount NO marketplaces,
     /// set <see cref="ExplicitMarketplaces"/>, which sends an empty list as <c>[]</c>.
     /// </summary>
     public IReadOnlyList<string> Marketplaces { get; }
@@ -50,6 +50,21 @@ public sealed class SandboxCreateRequest
 
     /// <summary>The exact source preparation to require when creating a sandbox with publisher archives.</summary>
     public SandboxArchivePreparation? ArchivePreparation { get; init; }
+
+    /// <summary>
+    /// Guards the create with a version from <see cref="SandboxClient.PrepareSourcesAsync"/>, sent as
+    /// <c>expectedSourceVersion</c>. Send the identical marketplace and plugin selection that was prepared. The gateway
+    /// refuses a create whose sources moved (<c>409 sources_changed</c>), were not prepared
+    /// (<c>409 sources_not_prepared</c>), are stale (<c>409 sources_not_fresh</c>) or expired
+    /// (<c>410 source_snapshot_expired</c>); each is <see cref="SandboxErrorKind.Conflict"/> with
+    /// <see cref="SandboxException.ErrorCode"/> set, and the SDK never retries it unguarded. <see langword="null"/> (the
+    /// default) creates unguarded, as before. When <see cref="ArchivePreparation"/> is also set, both must name the
+    /// same version.
+    /// </summary>
+    public string? ExpectedSourceVersion { get; init; }
+
+    /// <summary>Sends <c>requireFresh: true</c>: the gateway refuses sources that are not fresh. Match the preparation.</summary>
+    public bool RequireFresh { get; init; }
 
     /// <summary>Read-only plugin directory mounts. Empty by default; omitted from the create request.</summary>
     public IReadOnlyList<SandboxPluginMount> PluginMounts { get; }

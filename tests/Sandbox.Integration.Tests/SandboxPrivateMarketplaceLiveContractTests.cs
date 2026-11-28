@@ -1,0 +1,187 @@
+using System.Security.Cryptography;
+using FluentAssertions;
+using Xunit;
+using BrokerMode = AchieveAi.LmDotnetTools.Sandbox.Integration.Tests.FakePrivateProvider.BrokerMode;
+
+namespace AchieveAi.LmDotnetTools.Sandbox.Integration.Tests;
+
+/// <summary>
+/// Live contract for private marketplace registration (#1004; gateway PR #375, first released in v0.1.23): an opaque
+/// connection id reaches the app's credential broker, the gateway reads the repository only with the broker's
+/// short-lived token, and register, list, sync and remove round-trip. A broker denial and an unreachable broker come
+/// back as their typed errors, a bad app key stays distinguishable from a denial, and nothing falls back to an
+/// anonymous read. No real provider or secret is involved.
+/// </summary>
+/// <remarks>
+/// The test hosts both providers (<see cref="FakePrivateProvider"/>). The broker listens on <c>SANDBOX_PRIVATE_BROKER_PORT</c>; the contract job relays
+/// the gateway's <c>http://127.0.0.1:8099/</c> (its <c>APP_SECRETS_FILE</c> <c>marketplace_broker.url</c>) to it.
+/// The "GitHub" repository is served over dumb HTTP with TLS on <c>SANDBOX_PRIVATE_GIT_PORT</c>, under a certificate
+/// for <c>github.com</c> signed by the job's ephemeral CA (<c>SANDBOX_TEST_CA_CERT</c>/<c>_KEY</c>); the job points
+/// the gateway's <c>github.com</c> at a relay to that port and trusts the CA through <c>GIT_SSL_CAINFO</c>.
+/// </remarks>
+[Collection(LiveGatewayCollection.Name)]
+public sealed class SandboxPrivateMarketplaceLiveContractTests
+{
+    private const string Owner = "lmdt-contract";
+    private const string Repository = "private-plugins";
+    private const string PrivateUrl = $"https://github.com/{Owner}/{Repository}";
+
+    private readonly LiveGatewayFixture _fixture;
+
+    public SandboxPrivateMarketplaceLiveContractTests(LiveGatewayFixture fixture) => _fixture = fixture;
+
+    [SkippableFact]
+    public async Task PrivateRegistration_RoundTrips_ThroughTheBroker_AndNeverReadsAnonymously()
+    {
+        Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason);
+        var brokerPort = Port("SANDBOX_PRIVATE_BROKER_PORT");
+        var gitPort = Port("SANDBOX_PRIVATE_GIT_PORT");
+        var bearer = Environment.GetEnvironmentVariable("SANDBOX_PRIVATE_BROKER_BEARER");
+        var caCert = Environment.GetEnvironmentVariable("SANDBOX_TEST_CA_CERT");
+        var caKey = Environment.GetEnvironmentVariable("SANDBOX_TEST_CA_KEY");
+        _fixture.RequirePrecondition(
+            brokerPort > 0
+                && gitPort > 0
+                && !string.IsNullOrWhiteSpace(bearer)
+                && File.Exists(caCert)
+                && File.Exists(caKey),
+            "Set SANDBOX_PRIVATE_BROKER_PORT, SANDBOX_PRIVATE_GIT_PORT, SANDBOX_PRIVATE_BROKER_BEARER and "
+                + "SANDBOX_TEST_CA_CERT/SANDBOX_TEST_CA_KEY, with the gateway wired to them as in sandbox-contract.yml."
+        );
+
+        var client = _fixture.Client;
+        var run = Guid.NewGuid().ToString("N")[..12];
+        var alias = "lmpriv-" + run;
+        var repo = await GitMarketplaceRepo.InitAsync(Path.Combine(Path.GetTempPath(), "lmdt-private-" + run));
+        var firstCommit = await repo.CommitVersionAsync("first-" + run);
+        await repo.UpdateServerInfoAsync();
+        await using var provider = await FakePrivateProvider.StartAsync(
+            brokerPort,
+            gitPort,
+            bearer!,
+            caCert!,
+            caKey!,
+            $"{Owner}/{Repository}",
+            Path.Combine(repo.Path, ".git")
+        );
+
+        var registered = await client.RegisterAppMarketplaceAsync(
+            alias,
+            new SandboxAppMarketplaceRegistration { Url = PrivateUrl, ConnectionId = "lmdt-conn-" + run }
+        );
+        try
+        {
+            registered.Url.Should().Be(PrivateUrl);
+            registered.Ref.Should().Be("latest");
+            registered.ResolvedSha.Should().Be(firstCommit);
+            provider.BrokerCalls.Should().NotBeEmpty();
+            provider
+                .BrokerCalls.Should()
+                .OnlyContain(c =>
+                    c.Schema == "marketplace.git.read/1"
+                    && c.AppId == _fixture.AppId
+                    && c.ConnectionId == "lmdt-conn-" + run
+                    && c.Url == PrivateUrl
+                );
+            provider.AuthorizedGitReads.Should().BePositive("the clone reads with the broker's token");
+
+            var listed = await client.ListAppMarketplacesAsync();
+            listed.Should().ContainSingle(m => m.Alias == alias).Which.ResolvedSha.Should().Be(firstCommit);
+
+            var secondCommit = await repo.CommitVersionAsync("second-" + run);
+            await repo.UpdateServerInfoAsync();
+            var brokerCallsBeforeSync = provider.BrokerCalls.Count;
+            var synced = await client.SyncAppMarketplaceAsync(alias);
+            synced.ResolvedSha.Should().Be(secondCommit);
+            provider.BrokerCalls.Count.Should().BeGreaterThan(brokerCallsBeforeSync, "every fetch re-asks the broker");
+
+            // A revoked grant: the sync and a new registration are denied, and no Git read happens at all.
+            provider.Mode = BrokerMode.Deny;
+            var gitReadsBeforeDenial = provider.AuthorizedGitReads;
+            var revoked = await Assert.ThrowsAsync<SandboxException>(() => client.SyncAppMarketplaceAsync(alias));
+            ExpectDenied(revoked, bearer!, provider.Token);
+            var deniedAlias = alias + "-denied";
+            var denied = await Assert.ThrowsAsync<SandboxException>(() =>
+                client.RegisterAppMarketplaceAsync(
+                    deniedAlias,
+                    new SandboxAppMarketplaceRegistration { Url = PrivateUrl, ConnectionId = "lmdt-denied-" + run }
+                )
+            );
+            ExpectDenied(denied, bearer!, provider.Token);
+            provider.BrokerCalls.Should().Contain(c => c.ConnectionId == "lmdt-denied-" + run);
+            provider.AuthorizedGitReads.Should().Be(gitReadsBeforeDenial, "a denied grant never reaches Git");
+
+            provider.Mode = BrokerMode.Unavailable;
+            var unavailable = await Assert.ThrowsAsync<SandboxException>(() =>
+                client.RegisterAppMarketplaceAsync(
+                    deniedAlias,
+                    new SandboxAppMarketplaceRegistration { Url = PrivateUrl, ConnectionId = "lmdt-down-" + run }
+                )
+            );
+            unavailable.Kind.Should().Be(SandboxErrorKind.Unavailable);
+            unavailable.ErrorCode.Should().Be("marketplace_broker_unavailable");
+            unavailable.StatusCode.Should().Be(503);
+            ExpectRedacted(unavailable, bearer!, provider.Token);
+            provider.AuthorizedGitReads.Should().Be(gitReadsBeforeDenial);
+            provider.UnauthorizedGitReads.Should().Be(0, "no request reached the repository without the token");
+            provider.RejectedBrokerCalls.Should().Be(0, "the gateway always authenticates to the broker");
+            (await client.ListAppMarketplacesAsync()).Should().NotContain(m => m.Alias == deniedAlias);
+
+            // A rejected app key is an authorization failure WITHOUT the denial code, so callers can tell them apart.
+            using var wrongKey = new SandboxClient(
+                new SandboxClientOptions(
+                    _fixture.Options.ServerAddress,
+                    _fixture.AppId,
+                    Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+                    _fixture.Options.ExecutionTimeout,
+                    _fixture.Options.TransportTimeout,
+                    _fixture.Options.AllowInsecureDevelopmentTransport
+                )
+            );
+            var badKey = await Assert.ThrowsAsync<SandboxException>(() =>
+                wrongKey.RegisterAppMarketplaceAsync(
+                    deniedAlias,
+                    new SandboxAppMarketplaceRegistration { Url = PrivateUrl, ConnectionId = "lmdt-conn-" + run }
+                )
+            );
+            badKey.Kind.Should().Be(SandboxErrorKind.Authorization);
+            badKey.ErrorCode.Should().BeNull();
+            badKey.StatusCode.Should().Be(401);
+        }
+        finally
+        {
+            provider.Mode = BrokerMode.Allow;
+            var removed = await client.RemoveAppMarketplaceAsync(alias);
+            removed.Should().BeTrue();
+        }
+
+        (await client.ListAppMarketplacesAsync()).Should().NotContain(m => m.Alias == alias);
+        (await client.RemoveAppMarketplaceAsync(alias)).Should().BeFalse("it is no longer registered");
+        DeleteTree(repo.Path);
+    }
+
+    /// <summary>Deletes a git work tree; git writes its objects read-only, which Windows refuses to delete.</summary>
+    private static void DeleteTree(string path)
+    {
+        foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+        {
+            File.SetAttributes(file, FileAttributes.Normal);
+        }
+
+        Directory.Delete(path, recursive: true);
+    }
+
+    private static void ExpectDenied(SandboxException error, string bearer, string token)
+    {
+        error.Kind.Should().Be(SandboxErrorKind.Authorization);
+        error.ErrorCode.Should().Be("marketplace_access_denied");
+        error.StatusCode.Should().Be(403);
+        ExpectRedacted(error, bearer, token);
+    }
+
+    private static void ExpectRedacted(SandboxException error, string bearer, string token) =>
+        error.ToString().Should().NotContain(token).And.NotContain(bearer).And.NotContain(PrivateUrl);
+
+    private static int Port(string name) =>
+        int.TryParse(Environment.GetEnvironmentVariable(name), out var port) ? port : 0;
+}

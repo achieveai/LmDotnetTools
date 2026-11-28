@@ -119,4 +119,44 @@ internal static class ReadmeUsageSample
             await client.DeleteOperationAsync(sessionId, failed);
         }
     }
+
+    /// <summary>Mirrors README "Prepare and guarded create": prepare, resume on a timeout, stop on Unversioned.</summary>
+    public static async Task GuardedCreateFlowAsync(SandboxClient client)
+    {
+        var selection = new SandboxSourcePreparationRequest(marketplaces: ["team"], pluginSelection: null)
+        {
+            Refresh = true, // fetch first; consumed here, never sent to create
+            MaxWait = TimeSpan.FromMinutes(2), // bound on submission + polling (default 5 min)
+        };
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3)); // the caller's own bound
+        SandboxSourcePreparation prepared;
+        try
+        {
+            prepared = await client.PrepareSourcesAsync(selection, cts.Token);
+        }
+        catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.TransportTimeout && ex.OperationId is { } saved)
+        {
+            // Still preparing after MaxWait. Keep `saved`; resuming polls it again and never prepares twice.
+            prepared = await client.ResumeSourcePreparationAsync(saved, TimeSpan.FromMinutes(1), cts.Token);
+        }
+
+        if (prepared.Status != SandboxSourcePreparationStatus.Ready)
+        {
+            // Unversioned: there is no version to guard a create with. Stop (or create unguarded on purpose).
+            return;
+        }
+
+        foreach (var source in prepared.Sources!)
+        {
+            Console.WriteLine($"{source.Marketplace} @ {source.Sha}");
+        }
+
+        _ = await client.CreateAsync(
+            new SandboxCreateRequest("ws", marketplaces: ["team"]) // the SAME selection
+            {
+                ExpectedSourceVersion = prepared.SourceVersion,
+            },
+            cts.Token
+        );
+    }
 }

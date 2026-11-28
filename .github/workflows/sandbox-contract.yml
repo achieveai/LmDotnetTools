@@ -86,16 +86,29 @@ env:
   # were verified in GHCR before this bump.
   # GHCR keeps only about the newest 3 tags: bump before this pin becomes the oldest retained tag.
   #
+  # 0.1.23 is the floor for SandboxSourcePreparationLiveContractTests and
+  # SandboxPrivateMarketplaceLiveContractTests: source preparation (POST/GET /api/v1/apps/self/plugins/prepare),
+  # the guarded create (expectedSourceVersion) and private registrations through an app credential broker
+  # (connectionId, APP_SECRETS_FILE marketplace_broker) first ship there (upstream PR #375, tagged from master
+  # cab783d6). Below it those tests fail, not skip. 0.1.23 also removes the emptied per-operation directory on
+  # operation DELETE (upstream #172), which SandboxLiveContractTests.Operation_Delete_* pins; 0.1.21 left it behind.
+  #
   # The external/SandboxedOstoolsMcpServer submodule is pinned to a gateway master commit for
   # development (advance it with `git submodule update --remote`), so it may run ahead of this
   # tag. This tag is the released contract CI verifies; CI pulls these images and never builds
   # from the submodule.
-  IMAGE_TAG: '0.1.21'
+  IMAGE_TAG: '0.1.23'
   GATEWAY_IMAGE: ghcr.io/achieveai/mcp-gateway
   AGENT_IMAGE: ghcr.io/achieveai/llm-sandbox-agent
   PROXY_IMAGE: ghcr.io/achieveai/egress-proxy
   GATEWAY_PORT: '3987'
   GATEWAY_APP_ID: wi187-ci
+  # A second app on the same gateway: preparation operations are app-bound (SandboxSourcePreparationLiveContractTests).
+  GATEWAY_APP_B_ID: wi187-ci-b
+  # The gateway reaches the test's credential broker at this loopback port (relayed to the runner, see below).
+  BROKER_PORT: '8099'
+  # The test's fake "github.com" listens here on the runner; a relay answers for github.com:443.
+  FAKE_GITHUB_PORT: '8443'
   # Alias of the committed fixture marketplace (tests/Sandbox.Integration.Tests/Fixtures/marketplace).
   FIXTURE_MARKETPLACE: lmtest
 
@@ -141,11 +154,18 @@ jobs:
         id: authcreds
         run: |
           app_secret="$(openssl rand -base64 32)"
+          app_secret_b="$(openssl rand -base64 32)"
           proxy_cred="$(openssl rand -base64 32)"
+          # Authenticates the gateway to the test's credential broker; must differ from every app key.
+          broker_bearer="$(openssl rand -hex 32)"
           echo "::add-mask::$app_secret"
+          echo "::add-mask::$app_secret_b"
           echo "::add-mask::$proxy_cred"
+          echo "::add-mask::$broker_bearer"
           echo "app_secret=$app_secret" >> "$GITHUB_OUTPUT"
+          echo "app_secret_b=$app_secret_b" >> "$GITHUB_OUTPUT"
           echo "proxy_cred=$proxy_cred" >> "$GITHUB_OUTPUT"
+          echo "broker_bearer=$broker_bearer" >> "$GITHUB_OUTPUT"
           # Runtime agents carry this ownership label (not the Compose project label).
           echo "GATEWAY_INSTANCE_ID=$(cat /proc/sys/kernel/random/uuid)" >> "$GITHUB_ENV"
 
@@ -161,9 +181,35 @@ jobs:
             -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign'
           chmod 644 "$certs/ca.key" "$certs/ca.crt"
 
-      - name: Start gateway container (Docker backend, AUTH_ENFORCE=true)
+      # Git marketplaces (MARKETPLACE_STORE_PATH) for the source-preparation and private-marketplace contracts.
+      # mkt-src is the file:// marketplace the preparation test commits into. The gateway (uid 1000) clones it,
+      # and git refuses a repository another user owns (safe.directory; the gateway disables global git config),
+      # so the repository is handed to uid 1000 and made writable for the test, which commits with
+      # safe.directory=*. The app registry moves to APP_SECRETS_FILE: only that form carries a marketplace_broker.
+      - name: Prepare marketplace store, source repository and app registry
         env:
           APP_SECRET: ${{ steps.authcreds.outputs.app_secret }}
+          APP_SECRET_B: ${{ steps.authcreds.outputs.app_secret_b }}
+          BROKER_BEARER: ${{ steps.authcreds.outputs.broker_bearer }}
+        run: |
+          set -euo pipefail
+          store="${RUNNER_TEMP}/mkt-store"
+          src="${RUNNER_TEMP}/mkt-src"
+          registry="${RUNNER_TEMP}/gw-registry"
+          mkdir -p "$store" "$registry"
+          chmod 0777 "$store"
+          git init -q -b main "$src"
+          sudo chown -R 1000:1000 "$src"
+          sudo chmod -R a+rwX "$src"
+          jq -n --arg a "$GATEWAY_APP_ID" --arg sa "$APP_SECRET" --arg b "$GATEWAY_APP_B_ID" --arg sb "$APP_SECRET_B" \
+            --arg url "http://127.0.0.1:${BROKER_PORT}/" --arg bearer "$BROKER_BEARER" \
+            '{($a): {secret: $sa, marketplace_broker: {url: $url, bearer: $bearer}}, ($b): $sb}' \
+            > "$registry/apps.json"
+          # The gateway user (uid 1000) reads it through a single-file mount; the runner VM is ephemeral.
+          chmod 0644 "$registry/apps.json"
+
+      - name: Start gateway container (Docker backend, AUTH_ENFORCE=true)
+        env:
           PROXY_CRED: ${{ steps.authcreds.outputs.proxy_cred }}
         run: |
           set -euo pipefail
@@ -195,15 +241,30 @@ jobs:
           fx="${GITHUB_WORKSPACE}/tests/Sandbox.Integration.Tests/Fixtures/marketplace"
           injected="${GITHUB_WORKSPACE}/tests/LmStreaming.Sample.E2E.Tests/Fixtures/mcp-injected"
           certs="${RUNNER_TEMP}/mcp-canary-certs"
+          # Same-path mounts again: the gateway hands store worktrees to the host daemon as marketplace binds.
+          store="${RUNNER_TEMP}/mkt-store"
+          src="${RUNNER_TEMP}/mkt-src"
+          registry="${RUNNER_TEMP}/gw-registry"
+          # github.com resolves to the fake-GitHub relay (172.30.187.10), whose certificate the ephemeral CA signs;
+          # GIT_SSL_CAINFO makes the gateway's git trust only that CA. No real provider is ever reached.
           docker run -d --name wi187-gateway \
             --network wi187-contract --ip 172.30.187.2 \
             --add-host host.docker.internal:host-gateway \
+            --add-host github.com:172.30.187.10 \
             -p "127.0.0.1:${GATEWAY_PORT}:3000" \
             --group-add "$docker_gid" \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$ws:$ws" \
             -v "$fx:$fx:ro" \
             -v "$injected:$injected:ro" \
+            -v "$store:$store" \
+            -v "$src:$src:ro" \
+            -v "$registry/apps.json:/run/sbx/apps.json:ro" \
+            -v "$certs/ca.crt:/run/sbx/test-ca.crt:ro" \
+            -e "MARKETPLACE_STORE_PATH=$store" \
+            -e MARKETPLACE_ALLOW_FILE_URLS=true \
+            -e MARKETPLACE_SYNC_INTERVAL_SECS=0 \
+            -e GIT_SSL_CAINFO=/run/sbx/test-ca.crt \
             -e "PLUGINS_DIRS=${FIXTURE_MARKETPLACE}=$fx,lminjected=$injected" \
             -e "DEFAULT_MARKETPLACES=${FIXTURE_MARKETPLACE}" \
             -e BIND_ADDRESS=0.0.0.0 \
@@ -217,7 +278,7 @@ jobs:
             -e EGRESS_PROXY_EXTRA_HOST=wi187-proxy:172.30.187.3 \
             -e "CA_CERT_HOST_PATH=$certs/ca.crt" \
             -e AUTH_ENFORCE=true \
-            -e "APP_SECRETS=${GATEWAY_APP_ID}=${APP_SECRET}" \
+            -e APP_SECRETS_FILE=/run/sbx/apps.json \
             -e "PROXY_SERVICE_CRED=${PROXY_CRED}" \
             -e "GATEWAY_PROXY_CRED=${PROXY_CRED}" \
             -e DB_PATH=/tmp/gw.db \
@@ -239,6 +300,19 @@ jobs:
             -e DNS_OVERRIDE=mcp.sbx.test:host.docker.internal \
             -e SSRF_ALLOW_PRIVATE_DNS_OVERRIDE=true \
             -e "GATEWAY_PROXY_CRED=$PROXY_CRED" "${PROXY_IMAGE}:${IMAGE_TAG}"
+
+      # The broker URL must be http loopback inside the gateway (the gateway never rewrites a broker's host), so a
+      # relay in the gateway's network namespace forwards 127.0.0.1:BROKER_PORT to the test's broker on the runner.
+      # Another relay on the contract network stands in for github.com:443 and forwards to the test's TLS Git host.
+      # Both are plain TCP: TLS ends in the test, under a github.com certificate from the ephemeral CA.
+      - name: Start marketplace relays
+        run: |
+          set -euo pipefail
+          docker run -d --name wi187-broker-relay --network container:wi187-gateway alpine/socat:1.8.0.3 \
+            "TCP-LISTEN:${BROKER_PORT},bind=127.0.0.1,fork,reuseaddr" "TCP:host.docker.internal:${BROKER_PORT}"
+          docker run -d --name wi187-fake-github --network wi187-contract --ip 172.30.187.10 \
+            --add-host host.docker.internal:host-gateway alpine/socat:1.8.0.3 \
+            TCP-LISTEN:443,fork,reuseaddr "TCP:host.docker.internal:${FAKE_GITHUB_PORT}"
 
       - name: Wait for MCP proxy readiness
         run: |
@@ -299,11 +373,22 @@ jobs:
           SANDBOX_BASE_URL: http://127.0.0.1:${{ env.GATEWAY_PORT }}
           SANDBOX_APP_ID: ${{ env.GATEWAY_APP_ID }}
           SANDBOX_APP_KEY: ${{ steps.authcreds.outputs.app_secret }}
+          SANDBOX_APP_B_ID: ${{ env.GATEWAY_APP_B_ID }}
+          SANDBOX_APP_B_KEY: ${{ steps.authcreds.outputs.app_secret_b }}
+          SANDBOX_MARKETPLACE_SRC_REPO: ${{ runner.temp }}/mkt-src
+          SANDBOX_PRIVATE_BROKER_PORT: ${{ env.BROKER_PORT }}
+          SANDBOX_PRIVATE_BROKER_BEARER: ${{ steps.authcreds.outputs.broker_bearer }}
+          SANDBOX_PRIVATE_GIT_PORT: ${{ env.FAKE_GITHUB_PORT }}
+          SANDBOX_TEST_CA_CERT: ${{ runner.temp }}/mcp-canary-certs/ca.crt
+          SANDBOX_TEST_CA_KEY: ${{ runner.temp }}/mcp-canary-certs/ca.key
           # Absence of a usable gateway is a HARD failure here (no silent skip).
           SANDBOX_CONTRACT_REQUIRED: 'true'
+        # One target framework at a time: the marketplace contracts register and remove app marketplaces, and the
+        # gateway keys every prepared source recipe on the app's whole registration list, so two frameworks running
+        # at once would invalidate each other's preparations (and both would bind the same broker and Git ports).
         run: >-
           dotnet test tests/Sandbox.Integration.Tests/AchieveAi.LmDotnetTools.Sandbox.Integration.Tests.csproj
-          -c Release
+          -c Release -p:TestTfmsInParallel=false
 
       - name: Run actual-app injected MCP canary (net9.0)
         env:
@@ -327,11 +412,13 @@ jobs:
         run: |
           docker logs wi187-gateway || true
           docker logs wi187-proxy || true
+          docker logs wi187-broker-relay || true
+          docker logs wi187-fake-github || true
 
       - name: Stop gateway
         if: always()
         run: |
-          docker rm -f wi187-gateway wi187-proxy || true
+          docker rm -f wi187-broker-relay wi187-fake-github wi187-gateway wi187-proxy || true
           if [ -n "${GATEWAY_INSTANCE_ID:-}" ]; then
             docker ps -aq --filter "label=gateway-instance=${GATEWAY_INSTANCE_ID}" | xargs -r docker rm -f
           fi

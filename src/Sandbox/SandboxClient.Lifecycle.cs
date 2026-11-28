@@ -44,12 +44,17 @@ public sealed partial class SandboxClient
             throw await MapErrorResponseAsync(response, "sandbox creation", ct).ConfigureAwait(false);
         }
 
-        var payload = await ReadSandboxResponseOrThrowAsync(response, "sandbox creation", ct).ConfigureAwait(false);
+        // Only session_id must parse before the cleanup scope: without it there is nothing to delete. Every other field,
+        // and every content check (source and archive echoes, inventory, image report, skills, ...), is read inside it,
+        // so a create whose reply is rejected is deleted, not leaked.
         var statusCode = (int)response.StatusCode;
-        IReadOnlyList<SandboxAppMarketplaceArchive> archives;
+        var reply = await ReadSandboxReplyJsonAsync(response, "sandbox creation", ct).ConfigureAwait(false);
+        var sessionId = ReadSandboxSessionId(reply, "sandbox creation", statusCode);
+        SandboxInfo info;
         try
         {
-            archives = ReadResolvedArchiveReceipts(
+            var payload = ToSandboxReply(reply, "sandbox creation", statusCode)!;
+            var archives = ReadResolvedArchiveReceipts(
                 payload.ResolvedArchiveReceipts,
                 payload.SourceVersion,
                 "creating a sandbox",
@@ -70,20 +75,31 @@ public sealed partial class SandboxClient
                     statusCode
                 );
             }
+
+            if (dto.ExpectedSourceVersion is { } expectedVersion && payload.SourceVersion != expectedVersion)
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    "The gateway did not acknowledge the expected source version.",
+                    statusCode
+                );
+            }
+
+            info = ToSandboxInfo(
+                payload,
+                "sandbox creation",
+                statusCode,
+                archives,
+                ReadSourceEcho(payload, "sandbox creation", statusCode),
+                sentSearchFlags: request.Skills is { SearchTool: not null } or { AgentsSearchTool: not null }
+            );
         }
         catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.Protocol)
         {
-            await DeleteUnverifiedArchiveSandboxAsync(payload.SessionId, statusCode).ConfigureAwait(false);
+            await DeleteRejectedSandboxAsync(sessionId, ex).ConfigureAwait(false);
             throw;
         }
 
-        var info = ToSandboxInfo(
-            payload,
-            "sandbox creation",
-            statusCode,
-            archives,
-            sentSearchFlags: request.Skills is { SearchTool: not null } or { AgentsSearchTool: not null }
-        );
         if (request.WorkingDir is { } workingDir)
         {
             // Before seeding the mount cache: a sandbox whose working directory was not honored is deleted, not used.
@@ -95,19 +111,26 @@ public sealed partial class SandboxClient
         return info;
     }
 
-    private async Task DeleteUnverifiedArchiveSandboxAsync(string sessionId, int createStatus)
+    /// <summary>
+    /// Deletes a sandbox whose create echo was rejected. When the delete fails too, the thrown exception keeps both
+    /// causes (the rejection and the delete failure, as an <see cref="AggregateException"/>) and names the session id,
+    /// because nothing else holds it any more.
+    /// </summary>
+    private async Task DeleteRejectedSandboxAsync(string sessionId, SandboxException rejection)
     {
         try
         {
+            // Not the caller's token: a cancellation here would orphan the sandbox. The transport budget bounds it.
             await DeleteAsync(sessionId, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (SandboxException ex)
+        catch (SandboxException deleteFailure)
         {
             throw new SandboxException(
                 SandboxErrorKind.Protocol,
-                $"The gateway did not acknowledge the archive selection, and cleanup of sandbox '{sessionId}' failed.",
-                createStatus,
-                ex
+                $"{rejection.Message} Deleting sandbox '{sessionId}' failed ({deleteFailure.Kind}, status "
+                    + $"{deleteFailure.StatusCode?.ToString() ?? "none"}); delete it with DeleteAsync.",
+                rejection.StatusCode,
+                new AggregateException(rejection, deleteFailure)
             );
         }
     }
@@ -153,7 +176,13 @@ public sealed partial class SandboxClient
             );
         }
 
-        var info = ToSandboxInfo(payload, operation, statusCode, archives);
+        var info = ToSandboxInfo(
+            payload,
+            operation,
+            statusCode,
+            archives,
+            ReadSourceEcho(payload, operation, statusCode)
+        );
         SeedWorkspaceMountId(info);
         return info;
     }
@@ -321,8 +350,34 @@ public sealed partial class SandboxClient
                 )
                 : null,
             ArchiveReceipts: request.ArchivePreparation?.Archives.Select(ToArchiveReceiptDto).ToArray(),
-            ExpectedSourceVersion: request.ArchivePreparation?.SourceVersion
+            ExpectedSourceVersion: ExpectedSourceVersionOf(request),
+            // Never `refresh`: preparation consumes it. Omitted when false.
+            RequireFresh: request.RequireFresh ? true : null
         );
+
+    private static string? ExpectedSourceVersionOf(SandboxCreateRequest request)
+    {
+        var archiveVersion = request.ArchivePreparation?.SourceVersion;
+        if (request.ExpectedSourceVersion is not { } expected)
+        {
+            return archiveVersion;
+        }
+
+        if (string.IsNullOrWhiteSpace(expected) || expected.Any(char.IsControl))
+        {
+            throw new ArgumentException(
+                "ExpectedSourceVersion cannot be blank or contain control characters.",
+                nameof(request)
+            );
+        }
+
+        return archiveVersion is null || archiveVersion == expected
+            ? expected
+            : throw new ArgumentException(
+                "ExpectedSourceVersion and ArchivePreparation name different source versions.",
+                nameof(request)
+            );
+    }
 
     private static PluginRefDto ToPluginRefDto(SandboxPluginRef pluginRef) =>
         new(pluginRef.Marketplace, pluginRef.Plugin);
@@ -355,6 +410,7 @@ public sealed partial class SandboxClient
         string operation,
         int statusCode,
         IReadOnlyList<SandboxAppMarketplaceArchive> archives,
+        SourceEcho sourceEcho,
         bool sentSearchFlags = false
     ) =>
         new(
@@ -381,7 +437,79 @@ public sealed partial class SandboxClient
             Mcp = TryToMcpResolvedPolicy(dto.Mcp, statusCode),
             SourceVersion = dto.SourceVersion,
             ResolvedArchiveReceipts = archives,
+            SourceMode = sourceEcho.Mode,
+            SourceReceiptSources = sourceEcho.Sources,
+            RawSourceReceipt = sourceEcho.RawReceipt,
+            ResolvedMarketplaceRevisions = sourceEcho.Revisions,
         };
+
+    /// <summary>The parsed source mode, receipt and marketplace revisions of a create or GET echo.</summary>
+    private readonly record struct SourceEcho(
+        string? Mode,
+        IReadOnlyList<SandboxSourceReceiptEntry>? Sources,
+        JsonElement? RawReceipt,
+        IReadOnlyList<SandboxResolvedMarketplaceRevision> Revisions
+    );
+
+    /// <summary>Reads the source echo, throwing <see cref="SandboxErrorKind.Protocol"/> when it is malformed.</summary>
+    private static SourceEcho ReadSourceEcho(CreateSandboxResponseDto dto, string operation, int statusCode) =>
+        new(
+            dto.SourceMode switch
+            {
+                null or { ValueKind: JsonValueKind.Null } => null,
+                { ValueKind: JsonValueKind.String } mode => mode.GetString(),
+                _ => throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned a non-string 'sourceMode' for {operation}.",
+                    statusCode
+                ),
+            },
+            dto.SourceReceipt is { ValueKind: not JsonValueKind.Null } receipt
+                ? ReadReceiptSources(receipt, operation, statusCode)
+                : null,
+            dto.SourceReceipt is { ValueKind: not JsonValueKind.Null } raw ? raw.Clone() : null,
+            ReadResolvedMarketplaceRevisions(dto.ResolvedMarketplaceRevisions, operation, statusCode)
+        );
+
+    private static IReadOnlyList<SandboxResolvedMarketplaceRevision> ReadResolvedMarketplaceRevisions(
+        JsonElement? echo,
+        string operation,
+        int statusCode
+    )
+    {
+        if (echo is not { ValueKind: not JsonValueKind.Null } revisions)
+        {
+            return [];
+        }
+
+        if (revisions.ValueKind != JsonValueKind.Array)
+        {
+            throw new SandboxException(
+                SandboxErrorKind.Protocol,
+                $"Sandbox gateway returned a non-array 'resolvedMarketplaceRevisions' for {operation}.",
+                statusCode
+            );
+        }
+
+        var result = new List<SandboxResolvedMarketplaceRevision>();
+        foreach (var revision in revisions.EnumerateArray())
+        {
+            var marketplace = ReadOptionalString(revision, "marketplace", statusCode, operation);
+            var commit = ReadOptionalString(revision, "commit", statusCode, operation);
+            if (string.IsNullOrEmpty(marketplace) || string.IsNullOrEmpty(commit))
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned a resolved marketplace revision without marketplace or commit for {operation}.",
+                    statusCode
+                );
+            }
+
+            result.Add(new SandboxResolvedMarketplaceRevision(marketplace, commit));
+        }
+
+        return result.AsReadOnly();
+    }
 
     private static SandboxMcpResolvedPolicy? TryToMcpResolvedPolicy(JsonElement? echo, int statusCode)
     {
@@ -618,37 +746,83 @@ public sealed partial class SandboxClient
         return new SandboxInventory(dto.Status, dto.UnavailableReason, items);
     }
 
+    /// <summary>
+    /// Reads a create/GET reply in full, typing it in that order (GET and the mount lookup). A malformed body or a
+    /// missing session id is <see cref="SandboxErrorKind.Protocol"/>.
+    /// </summary>
     private static async Task<CreateSandboxResponseDto> ReadSandboxResponseOrThrowAsync(
         HttpResponseMessage response,
         string operation,
         CancellationToken ct
     )
     {
-        CreateSandboxResponseDto? payload;
-        try
-        {
-            payload = await response
-                .Content.ReadFromJsonAsync<CreateSandboxResponseDto>(SandboxJson.RestOptions, ct)
-                .ConfigureAwait(false);
-        }
-        catch (JsonException)
-        {
-            throw new SandboxException(
-                SandboxErrorKind.Protocol,
-                $"Sandbox gateway returned a malformed response for {operation}.",
-                (int)response.StatusCode
-            );
-        }
-
+        var statusCode = (int)response.StatusCode;
+        var reply = await ReadSandboxReplyJsonAsync(response, operation, ct).ConfigureAwait(false);
+        var payload = ToSandboxReply(reply, operation, statusCode);
         if (payload is null || string.IsNullOrWhiteSpace(payload.SessionId))
         {
-            throw new SandboxException(
-                SandboxErrorKind.Protocol,
-                $"Sandbox gateway returned a success status but no session id for {operation}.",
-                (int)response.StatusCode
-            );
+            throw NoSessionId(operation, statusCode);
         }
 
         return payload;
     }
+
+    /// <summary>The reply as untyped JSON, so its fields can be typed one step at a time.</summary>
+    private static async Task<JsonElement> ReadSandboxReplyJsonAsync(
+        HttpResponseMessage response,
+        string operation,
+        CancellationToken ct
+    )
+    {
+        try
+        {
+            return await response
+                .Content.ReadFromJsonAsync<JsonElement>(SandboxJson.RestOptions, ct)
+                .ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            throw MalformedSandboxReply(operation, (int)response.StatusCode);
+        }
+    }
+
+    /// <summary>Only the reply's <c>session_id</c>, typed alone so no other field can hide it.</summary>
+    private static string ReadSandboxSessionId(JsonElement reply, string operation, int statusCode)
+    {
+        SandboxSessionIdDto? id;
+        try
+        {
+            id = reply.Deserialize<SandboxSessionIdDto>(SandboxJson.RestOptions);
+        }
+        catch (JsonException)
+        {
+            throw MalformedSandboxReply(operation, statusCode);
+        }
+
+        return id?.SessionId is { } sessionId && !string.IsNullOrWhiteSpace(sessionId)
+            ? sessionId
+            : throw NoSessionId(operation, statusCode);
+    }
+
+    private static CreateSandboxResponseDto? ToSandboxReply(JsonElement reply, string operation, int statusCode)
+    {
+        try
+        {
+            return reply.Deserialize<CreateSandboxResponseDto>(SandboxJson.RestOptions);
+        }
+        catch (JsonException)
+        {
+            throw MalformedSandboxReply(operation, statusCode);
+        }
+    }
+
+    private static SandboxException MalformedSandboxReply(string operation, int statusCode) =>
+        new(SandboxErrorKind.Protocol, $"Sandbox gateway returned a malformed response for {operation}.", statusCode);
+
+    private static SandboxException NoSessionId(string operation, int statusCode) =>
+        new(
+            SandboxErrorKind.Protocol,
+            $"Sandbox gateway returned a success status but no session id for {operation}.",
+            statusCode
+        );
 }

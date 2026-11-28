@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Sandbox: private app marketplaces and source preparation (#1004, #1005).** `RegisterAppMarketplaceAsync(alias,
+  SandboxAppMarketplaceRegistration)` sends an opaque `connectionId`; the old `(alias, url, gitRef, ct)` overload is
+  unchanged. `PrepareSourcesAsync` captures a selection's exact commits, `ResumeSourcePreparationAsync` resumes a saved
+  operation id with a GET (no new POST), and `SandboxCreateRequest.ExpectedSourceVersion` / `RequireFresh` guard a
+  create. Needs gateway 0.1.23 or later (PR #375). `SandboxAppMarketplace`, `SandboxAppMarketplaceRegistration` and
+  `SandboxSourceReceiptEntry` now print their repository URL (and connection id, and `LastError`) as `[REDACTED]` in
+  `ToString()`; the properties are unchanged. **Error kinds that change for existing callers:**
+  `410 source_snapshot_expired` (a create guarded by an archive preparation) is `Conflict`, was `WorkspacePurged`;
+  `429 preparation_capacity` is `Unavailable`, was `Protocol`; a `failed` status from
+  `PrepareMarketplacePluginSelectionAsync` / `PrepareMarketplaceArchiveSelectionAsync` now takes the kind of its
+  `error_code` (for example `preparation_expired` is `Conflict`, `marketplace_access_denied` is `Authorization`), was
+  always `Protocol`; a `403 marketplace_access_denied` carries `ErrorCode` (other `403`s stay code-less). Those two
+  selection calls also follow a restored operation id instead of failing with `Protocol`, and their errors carry
+  `OperationId` once the gateway named one, including a terminal reply they reject. Any SDK body read now takes at
+  most one byte past its cap from the stream. A control-plane (REST) call whose connection breaks, before the headers
+  or while a success body streams, now throws `SandboxException` `TransportTimeout`, was a raw `IOException`. The
+  `IOException` is retained in the exception chain: it is the inner exception, and source preparation recovery may
+  add another `SandboxException` layer (the one carrying `OperationId`) above it. A source preparation's error keeps
+  its `OperationId`, including an accepted (`202`) first reply that is otherwise malformed (an unknown, missing or
+  undecodable `status`) but names one valid `operationId`. That first reply has no handle when its id is missing,
+  null, empty, undecodable or invalid, or when two `operationId` members differ (`Protocol`, `OperationId` null, no
+  GET); repeated members with the same text read as that id. An undecodable string (an escaped lone surrogate) in
+  a preparation reply field, or in the source receipt or resolved revisions of a create or GET echo, is now
+  `Protocol`, was a raw `InvalidOperationException` (on create, the sandbox is deleted first). A
+  rejected create whose cleanup `DELETE` breaks keeps the session id and both causes. An unknown charset in a
+  successful preparation, resume, or app-marketplace JSON response now yields a `SandboxException` of kind
+  `Protocol` instead of a raw `InvalidOperationException`; a disabled encoding such as UTF-7 does too, instead of a
+  raw `NotSupportedException`. A create reply that names its `session_id` but has another response field the SDK
+  validates and rejects as malformed, even an optional one (for example `"sourceVersion":42`, `"sourceMode":42` or
+  `"volumes":42`), or that parses but fails a content check (a null inventory item, an incomplete image report, an invalid skills policy, webhook, partition or
+  plugin resolution), is still `Protocol`, and its sandbox is now deleted first; it used to be left running. The
+  optional `mcp` acknowledgment is deliberately tolerated: an unreadable block yields `Mcp == null` without deleting
+  the session. A reply whose `session_id` is missing or unreadable deletes nothing.
 - **LmStreaming: committed conversation deletes finish after cancellation.** Once the sandbox registry
   commits a delete, the host finishes it even if the caller stops waiting. This also applies when the
   registry finds no sandboxes. A conversation with forks is hidden so they can still read inherited messages.

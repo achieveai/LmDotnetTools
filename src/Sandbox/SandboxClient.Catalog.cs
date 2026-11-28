@@ -12,7 +12,7 @@ public sealed partial class SandboxClient
     /// </summary>
     /// <param name="marketplaces">
     /// Optional subset of marketplace aliases to preview. When omitted, the gateway applies its own
-    /// default set plus every git marketplace this app registered (<see cref="RegisterAppMarketplaceAsync"/>).
+    /// default set plus every git marketplace this app registered (<see cref="RegisterAppMarketplaceAsync(string, string, string, CancellationToken)"/>).
     /// </param>
     /// <param name="ct">Cancellation token observed by the HTTP call.</param>
     public async Task<SandboxMarketplaceCatalog> PreviewMarketplacesAsync(

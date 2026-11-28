@@ -602,15 +602,21 @@ internal static class ReviewRunner
         {
             return await read();
         }
+        // An answer cut mid-body (HttpIOException) or a connection reset while reading it (an IOException over a
+        // SocketException) arrives as a transport failure that carries the IOException. The read is read-only, so it is
+        // retried like an unanswered one, but said as cut.
+        catch (SandboxException ex)
+            when (ex.Kind == SandboxErrorKind.TransportTimeout && ex.InnerException is IOException cut)
+        {
+            throw new ReviewDeferredException($"The gateway's answer to {what} was cut: {cut.Message} Retry deferred.");
+        }
         catch (SandboxException ex) when (ex.Kind == SandboxErrorKind.TransportTimeout)
         {
             throw new ReviewDeferredException(
                 $"The gateway did not answer reading {what}: {ex.Message} Retry deferred."
             );
         }
-        // An answer cut mid-body (HttpIOException) or a connection reset while reading it (an IOException over a
-        // SocketException) reaches here as an IOException: the SDK maps only HttpRequestException to a transport
-        // failure. The read is read-only, so it is retried like an unanswered one.
+        // A read that does not go through the SDK's transport can still surface a raw IOException.
         catch (IOException ex)
         {
             throw new ReviewDeferredException($"The gateway's answer to {what} was cut: {ex.Message} Retry deferred.");
