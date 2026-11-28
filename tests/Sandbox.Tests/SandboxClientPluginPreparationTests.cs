@@ -104,6 +104,9 @@ public sealed class SandboxClientPluginPreparationTests
     [Theory]
     [InlineData("""{"status":"ready","recipe":{"effective":[{"marketplace":"team","plugin":"chosen"}]}}""")]
     [InlineData("""{"status":"unversioned","sourceReceipt":{"recipe":{"effective":null}}}""")]
+    [InlineData(
+        """{"status":"unversioned","error_code":"source_snapshot_unsupported","exactRepeatSupported":false,"recipe":{"effective":[{"marketplace":"team","plugin":"chosen"}]}}"""
+    )]
     [InlineData("""{"status":"ready","sourceReceipt":{"recipe":{"effective":[{"marketplace":"team"}]}}}""")]
     [InlineData(
         """{"status":"ready","sourceReceipt":{"recipe":{"effective":[{"marketplace":"team","plugin":"other"}]}}}"""

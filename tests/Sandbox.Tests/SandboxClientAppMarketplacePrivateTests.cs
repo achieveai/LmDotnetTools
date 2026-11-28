@@ -206,12 +206,16 @@ public sealed class SandboxClientAppMarketplacePrivateTests
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
-    private static async Task<SandboxException> RegisterPrivateAndCatchAsync(SandboxClient client) =>
+    private static async Task<SandboxException> RegisterPrivateAndCatchAsync(
+        SandboxClient client,
+        CancellationToken ct = default
+    ) =>
         (
             await Record.ExceptionAsync(() =>
                 client.RegisterAppMarketplaceAsync(
                     "team",
-                    new SandboxAppMarketplaceRegistration { Url = AdoUrl, ConnectionId = "publishing-team" }
+                    new SandboxAppMarketplaceRegistration { Url = AdoUrl, ConnectionId = "publishing-team" },
+                    ct
                 )
             )
         )
@@ -280,11 +284,12 @@ public sealed class SandboxClientAppMarketplacePrivateTests
         var stream = new ScriptedBodyStream([], chunkSize: 1) { Stall = true };
         var (client, handler) = TestSupport.CreateBorrowedClient(clock: clock);
         RespondForbidden(handler, stream);
+        using var outstanding = new CancellationTokenSource();
 
-        var call = RegisterPrivateAndCatchAsync(client);
-        await stream.ReadStarted.Task;
+        var call = RegisterPrivateAndCatchAsync(client, outstanding.Token);
+        await stream.ReadStarted.Task.WithinAsync("the 403 body read starting", outstanding);
         clock.Fire(TimeSpan.FromSeconds(30)).Should().Be(1, "only the 403 body read's budget is live");
-        var thrown = await call;
+        var thrown = await call.WithinAsync("the register failing at the body read's budget", outstanding);
 
         thrown.Kind.Should().Be(SandboxErrorKind.Authorization);
         thrown.StatusCode.Should().Be(403);
@@ -306,10 +311,10 @@ public sealed class SandboxClientAppMarketplacePrivateTests
             new SandboxAppMarketplaceRegistration { Url = AdoUrl, ConnectionId = "publishing-team" },
             cts.Token
         );
-        await stream.ReadStarted.Task;
+        await stream.ReadStarted.Task.WithinAsync("the 403 body read starting", cts);
         await cts.CancelAsync();
 
-        var thrown = await Record.ExceptionAsync(() => call);
+        var thrown = await Record.ExceptionAsync(() => call).WithinAsync("the cancelled register ending", cts);
         thrown.Should().BeAssignableTo<OperationCanceledException>();
         handler.Requests.Should().ContainSingle();
     }

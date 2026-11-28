@@ -195,6 +195,14 @@ public sealed partial class SandboxClient
                         )
                         .ConfigureAwait(false);
                     var reply = document.RootElement;
+                    if (!polling && response.StatusCode == HttpStatusCode.Accepted)
+                    {
+                        // The gateway accepted the work, so its id is a handle even when the rest of the reply is
+                        // malformed: the failure below then carries it for ResumeSourcePreparationAsync. Only a
+                        // readable, valid id counts; anything else leaves no handle.
+                        operationId = ReadAcceptedOperationId(reply);
+                    }
+
                     var replyStatus = ReadOptionalString(reply, "status", status, operation);
                     if (replyStatus == "failed")
                     {
@@ -267,6 +275,15 @@ public sealed partial class SandboxClient
 
     /// <summary>A terminal <c>ready</c>/<c>unversioned</c> reply, valid only until the delegate it is handed returns.</summary>
     private readonly record struct PreparationReply(JsonElement Body, string Status, int StatusCode, Guid? OperationId);
+
+    /// <summary>The <c>operationId</c> of an accepted reply when it is a valid id string; otherwise <see langword="null"/>.</summary>
+    private static Guid? ReadAcceptedOperationId(JsonElement reply) =>
+        reply.ValueKind == JsonValueKind.Object
+        && reply.TryGetProperty("operationId", out var offered)
+        && offered.ValueKind == JsonValueKind.String
+        && TryParseOperationId(offered.GetString(), out var id)
+            ? id
+            : null;
 
     // Guid.TryParseExact trims surrounding whitespace, so the length check keeps the id exactly its D form.
     private static bool TryParseOperationId(string? value, out Guid id) =>

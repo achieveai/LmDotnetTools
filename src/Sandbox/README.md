@@ -53,8 +53,9 @@ commit, so a gateway pinned there cannot serve this SDK's command or file operat
 the workflow is the operative pin.
 
 **Gateway compatibility:** error and operation semantics are synced to `SandboxedOstoolsMcpServer`
-`origin/master` `7f19413` (v0.1.16), and CI pins image tag `0.1.16`: images, homes, backups, per-agent
-state and leased browsers need it. Per-app git marketplaces (below) are built against the gateway commit
+`origin/master` `7f19413` (v0.1.16). CI pins image tag `0.1.23` (`IMAGE_TAG` in
+`.github/workflows/sandbox-contract.yml`); images, homes, backups, per-agent state and leased browsers need
+0.1.16 or later. Per-app git marketplaces (below) are built against the gateway commit
 `bac5a32`, which is NOT in v0.1.16 — on v0.1.16 their routes do not exist. The working directory,
 properties, skill tiers and the unified webhook (below) are synced to `origin/master` `8547483f`
 (2026-10-18, after v0.1.16, unreleased): on v0.1.16 their routes do not exist, and a requested
@@ -698,9 +699,11 @@ var info = await client.CreateAsync(
   `PluginSelection` keeps `null` (no restriction) apart from `[]` (no plugins), as on create.
 - Create sends `expectedSourceVersion` and, when set, `requireFresh: true`. It never sends `refresh`. An
   unguarded create (`ExpectedSourceVersion` null) is unchanged. A create the gateway acknowledges with another (or
-  no) `sourceVersion`, or with any other malformed field (a `sourceReceipt`, a `resolvedMarketplaceRevisions`, a
-  wrong JSON type, a null inventory item, an incomplete image report), is deleted and throws `Protocol`. Only an
-  unreadable `session_id` deletes nothing, since there is no id to delete. If that delete fails too, the `Protocol` message names the session id and its `InnerException` is an
+  no) `sourceVersion`, or with a malformed required field (a field of the wrong JSON type, a malformed
+  `sourceReceipt` or `resolvedMarketplaceRevisions`, a null inventory item, an incomplete image report), is deleted
+  and throws `Protocol`. The optional `mcp` acknowledgment is an exception: an omitted, null or uninterpretable block
+  maps to `Mcp == null` and preserves the session. An unreadable `session_id` deletes nothing, since there is no id
+  to delete. If that delete fails too, the `Protocol` message names the session id and its `InnerException` is an
   `AggregateException` holding both the rejection and the delete failure. `ExpectedSourceVersion` and
   `ArchivePreparation` naming different versions, or a version that is blank or contains control characters, throw
   `ArgumentException` before any request.

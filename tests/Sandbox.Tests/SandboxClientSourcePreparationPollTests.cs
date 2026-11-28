@@ -155,11 +155,12 @@ public sealed class SandboxClientSourcePreparationPollTests
         var (client, handler) = TestSupport.CreateBorrowedClient(transportTimeout: S_transportTimeout, clock: clock);
         handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
         var polled = HangOnGet(handler);
+        using var outstanding = new CancellationTokenSource();
 
-        var call = PrepareAndCatchAsync(client);
-        await polled.Task;
+        var call = PrepareAndCatchAsync(client, outstanding.Token);
+        await polled.Task.WithinAsync("the first poll reaching the gateway", outstanding);
         clock.Fire(S_transportTimeout).Should().Be(1, "only the hanging poll's transport budget is live");
-        var thrown = await call;
+        var thrown = await call.WithinAsync("the prepare failing on the poll's transport timeout", outstanding);
 
         thrown.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
         thrown.Message.Should().Contain("transport timeout");
@@ -174,13 +175,20 @@ public sealed class SandboxClientSourcePreparationPollTests
         handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
         var polled = HangOnGet(handler);
         var maxWait = TimeSpan.FromMinutes(1);
+        using var outstanding = new CancellationTokenSource();
 
         var call = Record.ExceptionAsync(() =>
-            client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"]) { MaxWait = maxWait })
+            client.PrepareSourcesAsync(
+                new SandboxSourcePreparationRequest(["team"]) { MaxWait = maxWait },
+                outstanding.Token
+            )
         );
-        await polled.Task;
+        await polled.Task.WithinAsync("the first poll reaching the gateway", outstanding);
         clock.Fire(maxWait).Should().Be(1);
-        var thrown = (await call).Should().BeOfType<SandboxException>().Subject;
+        var thrown = (await call.WithinAsync("the prepare failing at its maxWait", outstanding))
+            .Should()
+            .BeOfType<SandboxException>()
+            .Subject;
 
         thrown.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
         thrown.Message.Should().Be($"Sandbox gateway did not finish preparing sandbox sources within {maxWait}.");
@@ -286,10 +294,10 @@ public sealed class SandboxClientSourcePreparationPollTests
         using var cts = new CancellationTokenSource();
 
         var call = client.ResumeSourcePreparationAsync(OperationId, ct: cts.Token);
-        await polled.Task;
+        await polled.Task.WithinAsync("the resume's poll reaching the gateway", cts);
         await cts.CancelAsync();
 
-        var thrown = await Record.ExceptionAsync(() => call);
+        var thrown = await Record.ExceptionAsync(() => call).WithinAsync("the cancelled resume ending", cts);
         thrown.Should().BeAssignableTo<OperationCanceledException>("caller cancellation is never a SandboxException");
         handler.Requests.Should().ContainSingle();
     }
@@ -455,13 +463,19 @@ public sealed class SandboxClientSourcePreparationPollTests
                     }
         );
         var maxWait = TimeSpan.FromMinutes(1);
+        using var outstanding = new CancellationTokenSource();
 
-        var first = await PrepareAndCatchAsync(client);
-        var resumed = CatchAsync(() => client.ResumeSourcePreparationAsync(first.OperationId!, maxWait));
-        await secondGet.Task;
+        var first = await PrepareAndCatchAsync(client, outstanding.Token)
+            .WithinAsync("the prepare failing on its broken poll body", outstanding);
+        var resumed = CatchAsync(() =>
+            client.ResumeSourcePreparationAsync(first.OperationId!, maxWait, outstanding.Token)
+        );
+        await secondGet.Task.WithinAsync("the first resume's GET reaching the gateway", outstanding);
         clock.Fire(maxWait).Should().Be(1, "only the resume's maxWait is due");
-        var second = await resumed;
-        var prepared = await client.ResumeSourcePreparationAsync(second.OperationId!, maxWait);
+        var second = await resumed.WithinAsync("the first resume failing at its maxWait", outstanding);
+        var prepared = await client
+            .ResumeSourcePreparationAsync(second.OperationId!, maxWait, outstanding.Token)
+            .WithinAsync("the second resume finishing", outstanding);
 
         first.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
         first.OperationId.Should().Be(OperationId);
@@ -546,6 +560,90 @@ public sealed class SandboxClientSourcePreparationPollTests
         handler.Requests.Should().HaveCount(3);
     }
 
+    [Theory]
+    [InlineData($$"""{"status":42,"operationId":"{{OperationId}}"}""")]
+    [InlineData($$"""{"operationId":"{{OperationId}}"}""")]
+    [InlineData($$"""{"status":"done","operationId":"{{OperationId}}"}""")]
+    public async Task PrepareSourcesAsync_AcceptedReplyWithInvalidStatus_KeepsItsOperationIdForResume(string accepted)
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
+        handler.OnJson(HttpMethod.Post, Path, accepted, HttpStatusCode.Accepted);
+        handler.OnJson(HttpMethod.Get, $"{Path}/{OperationId}", Ready);
+
+        var thrown = await PrepareAndCatchAsync(client);
+        var resumed = await client.ResumeSourcePreparationAsync(thrown.OperationId!);
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.StatusCode.Should().Be(202);
+        thrown.OperationId.Should().Be(OperationId);
+        resumed.Status.Should().Be(SandboxSourcePreparationStatus.Ready);
+        handler
+            .Requests.Select(request => (request.Method, request.Uri.AbsolutePath))
+            .Should()
+            .Equal((HttpMethod.Post, Path), (HttpMethod.Get, $"{Path}/{OperationId}"));
+    }
+
+    [Theory]
+    [InlineData("""{"status":42,"operationId":"not-a-guid"}""", HttpStatusCode.Accepted)]
+    [InlineData("""{"status":42,"operationId":42}""", HttpStatusCode.Accepted)]
+    [InlineData("""{"status":"done","operationId":"00000000-0000-0000-0000-000000000000"}""", HttpStatusCode.Accepted)]
+    [InlineData($$"""{"operationId":" {{OperationId}}"}""", HttpStatusCode.Accepted)]
+    [InlineData($$"""{"status":"done","operationId":"{{{OperationId}}}"}""", HttpStatusCode.Accepted)]
+    [InlineData($$"""[{"operationId":"{{OperationId}}"}]""", HttpStatusCode.Accepted)]
+    [InlineData(Preparing, HttpStatusCode.OK)]
+    public async Task PrepareSourcesAsync_InvalidInitialReplyWithoutAValidAcceptedId_HasNoHandle(
+        string reply,
+        HttpStatusCode status
+    )
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
+        handler.OnJson(HttpMethod.Post, Path, reply, status);
+
+        var thrown = await PrepareAndCatchAsync(client);
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.StatusCode.Should().Be((int)status);
+        thrown.OperationId.Should().BeNull("only a valid id on an accepted reply becomes a handle");
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task PrepareSourcesAsync_AcceptedThenUnknownCharset_IsProtocolWithOperationId()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
+        handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
+        handler.On(request => request.Method == HttpMethod.Get, _ => BogusCharset(Ready));
+
+        var thrown = await PrepareAndCatchAsync(client);
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.StatusCode.Should().Be(200);
+        thrown.OperationId.Should().Be(OperationId);
+        handler.Requests.Select(request => request.Method).Should().Equal(HttpMethod.Post, HttpMethod.Get);
+    }
+
+    [Fact]
+    public async Task ResumeSourcePreparationAsync_UnknownCharset_IsProtocolWithTheSavedId()
+    {
+        var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
+        handler.On(request => request.Method == HttpMethod.Get, _ => BogusCharset(Ready));
+
+        var thrown = await ResumeAndCatchAsync(client);
+
+        thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
+        thrown.StatusCode.Should().Be(200);
+        thrown.OperationId.Should().Be(OperationId);
+        handler.Requests.Should().ContainSingle().Which.Method.Should().Be(HttpMethod.Get);
+    }
+
+    /// <summary>A 200 whose Content-Type names a charset no runtime knows.</summary>
+    private static HttpResponseMessage BogusCharset(string json)
+    {
+        var content = new ByteArrayContent(Encoding.UTF8.GetBytes(json));
+        content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/json; charset=x-bogus");
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+    }
+
     /// <summary>A POST accepted as <see cref="OperationId"/>, restored as <see cref="RestoredOperationId"/>, then <paramref name="reply"/>.</summary>
     private static (SandboxClient Client, FakeGatewayHandler Handler) RestoredThen(string reply)
     {
@@ -586,14 +684,14 @@ public sealed class SandboxClientSourcePreparationPollTests
         return arrived;
     }
 
-    private static Func<Task> PrepareSources(SandboxClient client) =>
-        () => client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"]));
+    private static Func<Task> PrepareSources(SandboxClient client, CancellationToken ct = default) =>
+        () => client.PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"]), ct);
 
     private static Func<Task> PrepareSelection(SandboxClient client) =>
         () => client.PrepareMarketplacePluginSelectionAsync(["team"], [new("team", "chosen")]);
 
-    private static Task<SandboxException> PrepareAndCatchAsync(SandboxClient client) =>
-        CatchAsync(PrepareSources(client));
+    private static Task<SandboxException> PrepareAndCatchAsync(SandboxClient client, CancellationToken ct = default) =>
+        CatchAsync(PrepareSources(client, ct));
 
     private static Task<SandboxException> ResumeAndCatchAsync(SandboxClient client) =>
         CatchAsync(() => client.ResumeSourcePreparationAsync(OperationId));

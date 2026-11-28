@@ -500,8 +500,11 @@ public sealed partial class SandboxClient
         {
             payload = await response.Content.ReadFromJsonAsync<T>(SandboxJson.RestOptions, ct).ConfigureAwait(false);
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or NotSupportedException)
         {
+            // InvalidOperationException: ReadFromJsonAsync raises it, before any parsing, when Content-Type names a
+            // charset the runtime does not know (as in ReadEnvResponseOrThrowAsync). NotSupportedException: a disabled
+            // encoding such as UTF-7.
             throw new SandboxException(
                 SandboxErrorKind.Protocol,
                 $"Sandbox gateway returned a malformed body {operation}.",
