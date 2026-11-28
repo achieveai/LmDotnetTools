@@ -683,7 +683,11 @@ var info = await client.CreateAsync(
   network failure, a malformed reply and an error status alike. `ResumeSourcePreparationAsync(operationId,
   maxWait?, ct)` picks it up: it sends no POST, starts with `GET .../prepare/{operationId}` on the same app-bound
   client, follows a restored operation id, and returns or throws like `PrepareSourcesAsync`. Another app's id
-  reads as `404 preparation_not_found`.
+  reads as `404 preparation_not_found`. This includes a `Protocol` failure from a malformed `202`: an accepted first
+  reply keeps its `operationId` as the handle when that id is valid, even if its status is not. The id is valid
+  only as one readable GUID string in `D` form. A missing, null, empty, undecodable or invalid id leaves no handle
+  (`Protocol`, `OperationId` null, no GET). So do two `operationId` members whose text differs. Repeated members
+  with the same text read as that id.
 - The result: `Status` (`Ready` or `Unversioned`), `OperationId`, `SourceVersion`, `ErrorCode`, `Sources`
   (`Kind`, `Marketplace`, `Plugin`, `Url`, `RepoKey`, `Subdir`, `Sha`) and `RawSourceReceipt`. `Unversioned`
   (a mutable operator marketplace, or a gateway without a marketplace store) has no version: `ErrorCode` is
@@ -699,9 +703,10 @@ var info = await client.CreateAsync(
   `PluginSelection` keeps `null` (no restriction) apart from `[]` (no plugins), as on create.
 - Create sends `expectedSourceVersion` and, when set, `requireFresh: true`. It never sends `refresh`. An
   unguarded create (`ExpectedSourceVersion` null) is unchanged. A create the gateway acknowledges with another (or
-  no) `sourceVersion`, or with a malformed required field (a field of the wrong JSON type, a malformed
-  `sourceReceipt` or `resolvedMarketplaceRevisions`, a null inventory item, an incomplete image report), is deleted
-  and throws `Protocol`. The optional `mcp` acknowledgment is an exception: an omitted, null or uninterpretable block
+  no) `sourceVersion`, or with a malformed response field the SDK validates (a field of the wrong JSON type, a
+  malformed `sourceReceipt` or `resolvedMarketplaceRevisions`, a null inventory item, an incomplete image report),
+  is deleted and throws `Protocol`. That holds for an optional field too, once it is present and malformed (for
+  example `"sourceMode":42`). The optional `mcp` acknowledgment is an exception: an omitted, null or uninterpretable block
   maps to `Mcp == null` and preserves the session. An unreadable `session_id` deletes nothing, since there is no id
   to delete. If that delete fails too, the `Protocol` message names the session id and its `InnerException` is an
   `AggregateException` holding both the rejection and the delete failure. `ExpectedSourceVersion` and

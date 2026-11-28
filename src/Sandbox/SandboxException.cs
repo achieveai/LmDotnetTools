@@ -44,19 +44,20 @@ public sealed class SandboxException : Exception
     /// operation id is resolved). Never secret-bearing.
     /// </summary>
     /// <remarks>
-    /// A non-null id does NOT by itself mean the failure is recoverable — recoverability depends on
-    /// <see cref="Kind"/>. The id is stamped on every failure of an operation that has one, INCLUDING
-    /// deterministic ones such as <see cref="SandboxErrorKind.Authorization"/> (a <c>401</c>/<c>403</c>)
-    /// and a refused redirect, where re-issuing would simply fail the same way. Branch on
-    /// <see cref="Kind"/> first and recover only from the AMBIGUOUS failures — chiefly
-    /// <see cref="SandboxErrorKind.TransportTimeout"/> (the response was lost, so the operation may or may
-    /// not have run) and <see cref="SandboxErrorKind.Unavailable"/>. How to recover depends on the kind of id:
+    /// A non-null id identifies an operation; it does not guarantee recovery. The id is stamped on every failure of an
+    /// operation that has one, INCLUDING deterministic ones such as <see cref="SandboxErrorKind.Authorization"/> (a
+    /// <c>401</c>/<c>403</c>) and a refused redirect. How to use it depends on the kind of id:
     /// <list type="bullet">
-    /// <item>a command id: re-issue the command with this id, so the gateway replays the existing operation instead of
-    /// running a side-effecting command a second time;</item>
-    /// <item>a source-preparation id: pass it to <see cref="SandboxClient.ResumeSourcePreparationAsync"/>, which waits
-    /// on the existing preparation without preparing again. It is never a command id to replay.</item>
+    /// <item>a command id: branch on <see cref="Kind"/> and re-issue the command with this id only after AMBIGUOUS
+    /// failures, chiefly <see cref="SandboxErrorKind.TransportTimeout"/> (the response was lost, so the command may or
+    /// may not have run) and <see cref="SandboxErrorKind.Unavailable"/>. The gateway then replays the existing
+    /// operation instead of running a side-effecting command a second time.</item>
+    /// <item>a source-preparation id: <see cref="SandboxClient.ResumeSourcePreparationAsync"/> polls the same app's
+    /// existing operation by GET without another POST. That includes after a <see cref="SandboxErrorKind.Protocol"/>
+    /// failure from a malformed HTTP <c>202</c> that carried a validated id. It is never a command id to replay.</item>
     /// </list>
+    /// An id is not a reason to retry an authorization rejection, a refused redirect, or a terminal preparation failure
+    /// unchanged.
     /// </remarks>
     public string? OperationId { get; }
 

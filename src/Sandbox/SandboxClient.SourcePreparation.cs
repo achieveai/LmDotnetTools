@@ -195,12 +195,14 @@ public sealed partial class SandboxClient
                         )
                         .ConfigureAwait(false);
                     var reply = document.RootElement;
+                    Guid? acceptedId = null;
                     if (!polling && response.StatusCode == HttpStatusCode.Accepted)
                     {
                         // The gateway accepted the work, so its id is a handle even when the rest of the reply is
-                        // malformed: the failure below then carries it for ResumeSourcePreparationAsync. Only a
-                        // readable, valid id counts; anything else leaves no handle.
-                        operationId = ReadAcceptedOperationId(reply);
+                        // malformed: the failure below then carries it for ResumeSourcePreparationAsync. Only one
+                        // readable, valid id counts; anything else leaves no handle, and conflicting members throw
+                        // before one is kept.
+                        acceptedId = operationId = ReadOfferedOperationId(reply, status, operation);
                     }
 
                     var replyStatus = ReadOptionalString(reply, "status", status, operation);
@@ -226,7 +228,7 @@ public sealed partial class SandboxClient
                     if (
                         replyStatus != "preparing"
                         || (!polling && response.StatusCode != HttpStatusCode.Accepted)
-                        || !TryParseOperationId(ReadOptionalString(reply, "operationId", status, operation), out var id)
+                        || (polling ? ReadOfferedOperationId(reply, status, operation) : acceptedId) is not { } id
                     )
                     {
                         throw new SandboxException(
@@ -276,14 +278,45 @@ public sealed partial class SandboxClient
     /// <summary>A terminal <c>ready</c>/<c>unversioned</c> reply, valid only until the delegate it is handed returns.</summary>
     private readonly record struct PreparationReply(JsonElement Body, string Status, int StatusCode, Guid? OperationId);
 
-    /// <summary>The <c>operationId</c> of an accepted reply when it is a valid id string; otherwise <see langword="null"/>.</summary>
-    private static Guid? ReadAcceptedOperationId(JsonElement reply) =>
-        reply.ValueKind == JsonValueKind.Object
-        && reply.TryGetProperty("operationId", out var offered)
-        && offered.ValueKind == JsonValueKind.String
-        && TryParseOperationId(offered.GetString(), out var id)
-            ? id
-            : null;
+    /// <summary>
+    /// The <c>operationId</c> a preparing reply offers: the id when it is a readable, valid id string, otherwise
+    /// <see langword="null"/> (absent, null, empty, non-string, undecodable, or not a D-form GUID). Repeated members
+    /// count only when each is the same readable string, which is then the id. Any other repeat (texts that differ in
+    /// any way, even letter case, or a member that is not a readable string) is <see cref="SandboxErrorKind.Protocol"/>,
+    /// so a conflict never picks one of them.
+    /// </summary>
+    private static Guid? ReadOfferedOperationId(JsonElement reply, int status, string operation)
+    {
+        if (reply.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var seen = false;
+        string? offered = null;
+        foreach (var member in reply.EnumerateObject())
+        {
+            if (!member.NameEquals("operationId"))
+            {
+                continue;
+            }
+
+            var text = member.Value.ValueKind == JsonValueKind.String ? TryDecodeString(member.Value) : null;
+            if (seen && (text is null || !string.Equals(text, offered, StringComparison.Ordinal)))
+            {
+                throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned conflicting operation IDs while {operation}.",
+                    status
+                );
+            }
+
+            seen = true;
+            offered = text;
+        }
+
+        return TryParseOperationId(offered, out var id) ? id : null;
+    }
 
     // Guid.TryParseExact trims surrounding whitespace, so the length check keeps the id exactly its D form.
     private static bool TryParseOperationId(string? value, out Guid id) =>
@@ -397,7 +430,26 @@ public sealed partial class SandboxClient
         return entries.AsReadOnly();
     }
 
-    /// <summary>A string field, or null when absent or JSON null. A non-object or a non-string is a protocol error.</summary>
+    /// <summary>
+    /// A JSON string's text, or <see langword="null"/> when it cannot be decoded (an escaped lone surrogate such as
+    /// <c>"\uD800"</c>, for which <see cref="JsonElement.GetString"/> throws <see cref="InvalidOperationException"/>).
+    /// </summary>
+    private static string? TryDecodeString(JsonElement value)
+    {
+        try
+        {
+            return value.GetString();
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// A string field, or null when absent or JSON null. A non-object, a non-string or an undecodable string is a
+    /// protocol error.
+    /// </summary>
     private static string? ReadOptionalString(
         JsonElement element,
         string name,
@@ -422,7 +474,12 @@ public sealed partial class SandboxClient
         return value.ValueKind switch
         {
             JsonValueKind.Null => null,
-            JsonValueKind.String => value.GetString(),
+            JsonValueKind.String => TryDecodeString(value)
+                ?? throw new SandboxException(
+                    SandboxErrorKind.Protocol,
+                    $"Sandbox gateway returned an undecodable '{name}' while {operation}.",
+                    status
+                ),
             _ => throw new SandboxException(
                 SandboxErrorKind.Protocol,
                 $"Sandbox gateway returned a non-string '{name}' while {operation}.",

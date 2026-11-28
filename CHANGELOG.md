@@ -25,12 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or while a success body streams, now throws `SandboxException` `TransportTimeout`, was a raw `IOException`. The
   `IOException` is retained in the exception chain: it is the inner exception, and source preparation recovery may
   add another `SandboxException` layer (the one carrying `OperationId`) above it. A source preparation's error keeps
-  its `OperationId`, including an accepted (`202`) first reply that is otherwise malformed but names a valid
-  `operationId`; and a rejected create whose cleanup `DELETE` breaks keeps the session id and both causes. A
-  preparation, resume or app-marketplace reply whose `Content-Type` names an unknown charset is now `Protocol`, was a
-  raw `InvalidOperationException`. A create reply that names its `session_id` but has any other required field of the
-  wrong JSON type (for example `"sourceVersion":42`, `"sourceMode":42` or `"volumes":42`), or that parses but fails a
-  content check (a null inventory item, an incomplete image report, an invalid skills policy, webhook, partition or
+  its `OperationId`, including an accepted (`202`) first reply that is otherwise malformed (an unknown, missing or
+  undecodable `status`) but names one valid `operationId`. That first reply has no handle when its id is missing,
+  null, empty, undecodable or invalid, or when two `operationId` members differ (`Protocol`, `OperationId` null, no
+  GET); repeated members with the same text read as that id. An undecodable string (an escaped lone surrogate) in
+  a preparation reply field, or in the source receipt or resolved revisions of a create or GET echo, is now
+  `Protocol`, was a raw `InvalidOperationException` (on create, the sandbox is deleted first). A
+  rejected create whose cleanup `DELETE` breaks keeps the session id and both causes. An unknown charset in a
+  successful preparation, resume, or app-marketplace JSON response now yields a `SandboxException` of kind
+  `Protocol` instead of a raw `InvalidOperationException`; a disabled encoding such as UTF-7 does too, instead of a
+  raw `NotSupportedException`. A create reply that names its `session_id` but has another response field the SDK
+  validates and rejects as malformed, even an optional one (for example `"sourceVersion":42`, `"sourceMode":42` or
+  `"volumes":42`), or that parses but fails a content check (a null inventory item, an incomplete image report, an invalid skills policy, webhook, partition or
   plugin resolution), is still `Protocol`, and its sandbox is now deleted first; it used to be left running. The
   optional `mcp` acknowledgment is deliberately tolerated: an unreadable block yields `Mcp == null` without deleting
   the session. A reply whose `session_id` is missing or unreadable deletes nothing.

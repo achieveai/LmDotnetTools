@@ -111,17 +111,23 @@ public sealed class SandboxClientSourcePreparationPollTests
     [InlineData("not json")]
     [InlineData("""{"status":"preparing","operationId":"not-a-guid"}""")]
     [InlineData("""{"status":"done"}""")]
+    [InlineData("""{"status":"\uD800"}""")]
+    [InlineData("""{"status":"preparing","operationId":"\uD800"}""")]
+    [InlineData($$"""{"status":"preparing","operationId":"{{RestoredOperationId}}","operationId":"{{OperationId}}"}""")]
     public async Task PrepareSourcesAsync_AcceptedThenMalformedPoll_IsProtocolWithOperationId(string body)
     {
         var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
         handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
         handler.OnJson(HttpMethod.Get, $"{Path}/{OperationId}", body);
+        using var outstanding = new CancellationTokenSource();
 
-        var thrown = await PrepareAndCatchAsync(client);
+        var thrown = await PrepareAndCatchAsync(client, outstanding.Token)
+            .WithinAsync("the prepare failing on its malformed poll reply", outstanding);
 
         thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
         thrown.StatusCode.Should().Be(200);
         thrown.OperationId.Should().Be(OperationId);
+        handler.Requests.Select(request => request.Method).Should().Equal(HttpMethod.Post, HttpMethod.Get);
     }
 
     [Fact]
@@ -410,6 +416,7 @@ public sealed class SandboxClientSourcePreparationPollTests
         thrown.Kind.Should().Be(SandboxErrorKind.TransportTimeout);
         thrown.StatusCode.Should().BeNull();
         thrown.OperationId.Should().Be(OperationId);
+        InnerChain(thrown).Should().ContainItemsAssignableTo<IOException>("the broken read stays the root cause");
         thrown.Message.Should().NotContain("SECRET");
         handler.Requests.Select(request => request.Method).Should().Equal(HttpMethod.Post, HttpMethod.Get);
     }
@@ -564,18 +571,23 @@ public sealed class SandboxClientSourcePreparationPollTests
     [InlineData($$"""{"status":42,"operationId":"{{OperationId}}"}""")]
     [InlineData($$"""{"operationId":"{{OperationId}}"}""")]
     [InlineData($$"""{"status":"done","operationId":"{{OperationId}}"}""")]
+    [InlineData($$"""{"status":"\uD800","operationId":"{{OperationId}}"}""")]
     public async Task PrepareSourcesAsync_AcceptedReplyWithInvalidStatus_KeepsItsOperationIdForResume(string accepted)
     {
         var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
         handler.OnJson(HttpMethod.Post, Path, accepted, HttpStatusCode.Accepted);
         handler.OnJson(HttpMethod.Get, $"{Path}/{OperationId}", Ready);
+        using var outstanding = new CancellationTokenSource();
 
-        var thrown = await PrepareAndCatchAsync(client);
-        var resumed = await client.ResumeSourcePreparationAsync(thrown.OperationId!);
+        var thrown = await PrepareAndCatchAsync(client, outstanding.Token)
+            .WithinAsync("the prepare failing on its malformed accepted reply", outstanding);
 
         thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
         thrown.StatusCode.Should().Be(202);
         thrown.OperationId.Should().Be(OperationId);
+        var resumed = await client
+            .ResumeSourcePreparationAsync(thrown.OperationId!, ct: outstanding.Token)
+            .WithinAsync("the resume of the accepted id finishing", outstanding);
         resumed.Status.Should().Be(SandboxSourcePreparationStatus.Ready);
         handler
             .Requests.Select(request => (request.Method, request.Uri.AbsolutePath))
@@ -591,6 +603,25 @@ public sealed class SandboxClientSourcePreparationPollTests
     [InlineData($$"""{"status":"done","operationId":"{{{OperationId}}}"}""", HttpStatusCode.Accepted)]
     [InlineData($$"""[{"operationId":"{{OperationId}}"}]""", HttpStatusCode.Accepted)]
     [InlineData(Preparing, HttpStatusCode.OK)]
+    [InlineData("""{"status":"preparing","operationId":null}""", HttpStatusCode.Accepted)]
+    [InlineData("""{"status":"preparing","operationId":""}""", HttpStatusCode.Accepted)]
+    [InlineData("""{"status":"preparing","operationId":"\uD800"}""", HttpStatusCode.Accepted)]
+    [InlineData(
+        $$"""{"status":"preparing","operationId":"{{OperationId}}","operationId":"{{RestoredOperationId}}"}""",
+        HttpStatusCode.Accepted
+    )]
+    [InlineData(
+        $$"""{"status":"preparing","operationId":"not-a-guid","operationId":"{{OperationId}}"}""",
+        HttpStatusCode.Accepted
+    )]
+    [InlineData(
+        $$"""{"status":"preparing","operationId":"{{OperationId}}","operationId":null}""",
+        HttpStatusCode.Accepted
+    )]
+    [InlineData(
+        $$"""{"status":"preparing","operationId":"{{OperationId}}","operationId":"2276472B-0B6E-4DB9-8C50-0CB8C93B07AA"}""",
+        HttpStatusCode.Accepted
+    )]
     public async Task PrepareSourcesAsync_InvalidInitialReplyWithoutAValidAcceptedId_HasNoHandle(
         string reply,
         HttpStatusCode status
@@ -598,13 +629,41 @@ public sealed class SandboxClientSourcePreparationPollTests
     {
         var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
         handler.OnJson(HttpMethod.Post, Path, reply, status);
+        using var outstanding = new CancellationTokenSource();
 
-        var thrown = await PrepareAndCatchAsync(client);
+        var thrown = await PrepareAndCatchAsync(client, outstanding.Token)
+            .WithinAsync("the prepare failing on its first reply", outstanding);
 
         thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
         thrown.StatusCode.Should().Be((int)status);
-        thrown.OperationId.Should().BeNull("only a valid id on an accepted reply becomes a handle");
-        handler.Requests.Should().ContainSingle();
+        thrown.OperationId.Should().BeNull("only one valid id on an accepted reply becomes a handle");
+        handler.Requests.Should().ContainSingle().Which.Method.Should().Be(HttpMethod.Post);
+    }
+
+    [Fact]
+    public async Task PrepareSourcesAsync_AcceptedReplyRepeatingTheSameId_PollsThatId()
+    {
+        // RFC 8259 leaves repeated names to the reader. Members with the same text name one operation, so they are a
+        // handle; members that differ in any way are rejected above.
+        var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
+        handler.OnJson(
+            HttpMethod.Post,
+            Path,
+            $$"""{"status":"preparing","operationId":"{{OperationId}}","operationId":"{{OperationId}}"}""",
+            HttpStatusCode.Accepted
+        );
+        handler.OnJson(HttpMethod.Get, $"{Path}/{OperationId}", Ready);
+        using var outstanding = new CancellationTokenSource();
+
+        var prepared = await client
+            .PrepareSourcesAsync(new SandboxSourcePreparationRequest(["team"]), outstanding.Token)
+            .WithinAsync("the prepare polling the repeated id", outstanding);
+
+        prepared.OperationId.Should().Be(OperationId);
+        handler
+            .Requests.Select(request => (request.Method, request.Uri.AbsolutePath))
+            .Should()
+            .Equal((HttpMethod.Post, Path), (HttpMethod.Get, $"{Path}/{OperationId}"));
     }
 
     [Fact]
@@ -612,9 +671,11 @@ public sealed class SandboxClientSourcePreparationPollTests
     {
         var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
         handler.OnJson(HttpMethod.Post, Path, Preparing, HttpStatusCode.Accepted);
-        handler.On(request => request.Method == HttpMethod.Get, _ => BogusCharset(Ready));
+        handler.On(request => request.Method == HttpMethod.Get, _ => WithCharset(Ready, "x-bogus"));
+        using var outstanding = new CancellationTokenSource();
 
-        var thrown = await PrepareAndCatchAsync(client);
+        var thrown = await PrepareAndCatchAsync(client, outstanding.Token)
+            .WithinAsync("the prepare failing on its poll's charset", outstanding);
 
         thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
         thrown.StatusCode.Should().Be(200);
@@ -622,26 +683,46 @@ public sealed class SandboxClientSourcePreparationPollTests
         handler.Requests.Select(request => request.Method).Should().Equal(HttpMethod.Post, HttpMethod.Get);
     }
 
-    [Fact]
-    public async Task ResumeSourcePreparationAsync_UnknownCharset_IsProtocolWithTheSavedId()
+    [Theory]
+    [InlineData("x-bogus", typeof(InvalidOperationException))]
+    [InlineData("utf-7", typeof(NotSupportedException))]
+    public async Task ResumeSourcePreparationAsync_UndecodableCharset_IsProtocolWithTheSavedId(
+        string charset,
+        Type decoderCause
+    )
     {
+        // x-bogus is unknown to the runtime; UTF-7 is known but disabled since .NET 5.
         var (client, handler) = TestSupport.CreateBorrowedClient(clock: new ScriptedClock());
-        handler.On(request => request.Method == HttpMethod.Get, _ => BogusCharset(Ready));
+        handler.On(request => request.Method == HttpMethod.Get, _ => WithCharset(Ready, charset));
+        using var outstanding = new CancellationTokenSource();
 
-        var thrown = await ResumeAndCatchAsync(client);
+        var thrown = await ResumeAndCatchAsync(client, outstanding.Token)
+            .WithinAsync("the resume failing on its reply's charset", outstanding);
 
         thrown.Kind.Should().Be(SandboxErrorKind.Protocol);
         thrown.StatusCode.Should().Be(200);
         thrown.OperationId.Should().Be(OperationId);
-        handler.Requests.Should().ContainSingle().Which.Method.Should().Be(HttpMethod.Get);
+        InnerChain(thrown).Select(cause => cause.GetType()).Should().Contain(decoderCause);
+        var sent = handler.Requests.Should().ContainSingle().Subject;
+        sent.Method.Should().Be(HttpMethod.Get);
+        sent.Uri.AbsolutePath.Should().Be($"{Path}/{OperationId}");
     }
 
-    /// <summary>A 200 whose Content-Type names a charset no runtime knows.</summary>
-    private static HttpResponseMessage BogusCharset(string json)
+    /// <summary>A 200 whose Content-Type names <paramref name="charset"/>.</summary>
+    private static HttpResponseMessage WithCharset(string json, string charset)
     {
         var content = new ByteArrayContent(Encoding.UTF8.GetBytes(json));
-        content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/json; charset=x-bogus");
+        content.Headers.ContentType = MediaTypeHeaderValue.Parse($"application/json; charset={charset}");
         return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+    }
+
+    /// <summary>The inner exceptions below <paramref name="error"/>, nearest first.</summary>
+    private static IEnumerable<Exception> InnerChain(Exception error)
+    {
+        for (var cause = error.InnerException; cause is not null; cause = cause.InnerException)
+        {
+            yield return cause;
+        }
     }
 
     /// <summary>A POST accepted as <see cref="OperationId"/>, restored as <see cref="RestoredOperationId"/>, then <paramref name="reply"/>.</summary>
@@ -693,8 +774,8 @@ public sealed class SandboxClientSourcePreparationPollTests
     private static Task<SandboxException> PrepareAndCatchAsync(SandboxClient client, CancellationToken ct = default) =>
         CatchAsync(PrepareSources(client, ct));
 
-    private static Task<SandboxException> ResumeAndCatchAsync(SandboxClient client) =>
-        CatchAsync(() => client.ResumeSourcePreparationAsync(OperationId));
+    private static Task<SandboxException> ResumeAndCatchAsync(SandboxClient client, CancellationToken ct = default) =>
+        CatchAsync(() => client.ResumeSourcePreparationAsync(OperationId, ct: ct));
 
     private static async Task<SandboxException> CatchAsync(Func<Task> call) =>
         (await Record.ExceptionAsync(call)).Should().BeOfType<SandboxException>().Subject;

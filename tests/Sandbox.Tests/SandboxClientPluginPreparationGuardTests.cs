@@ -461,6 +461,7 @@ public sealed class SandboxClientPluginPreparationGuardTests
     [InlineData(""" "sourceReceipt":{"sources":"x"} """)]
     [InlineData(""" "resolvedMarketplaceRevisions":{"team":"abc"} """)]
     [InlineData(""" "resolvedMarketplaceRevisions":[{"marketplace":"team"}] """)]
+    [InlineData(""" "resolvedMarketplaceRevisions":[{"marketplace":"\uD800","commit":"abc"}] """)]
     [InlineData(""" "sourceMode":42 """)]
     [InlineData(""" "sourceVersion":42 """)]
     [InlineData(""" "resolvedArchiveReceipts":"x" """)]
