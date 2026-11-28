@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plugin resolution), is still `Protocol`, and its sandbox is now deleted first; it used to be left running. The
   optional `mcp` acknowledgment is deliberately tolerated: an unreadable block yields `Mcp == null` without deleting
   the session. A reply whose `session_id` is missing or unreadable deletes nothing.
+- **LmStreaming: committed conversation deletes finish after cancellation.** Once the sandbox registry
+  commits a delete, the host finishes it even if the caller stops waiting. This also applies when the
+  registry finds no sandboxes. A conversation with forks is hidden so they can still read inherited messages.
 
 - **LmStreaming: a sandbox release refuses a mode switch it sees land, and a failed workspace destroy no longer forgets
   a released sandbox.** The release route now checks the conversation's mode again in the same step that stores the

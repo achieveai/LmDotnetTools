@@ -279,7 +279,8 @@ public sealed class ReviewdPreparedContextTests
                 recovered = 'publication_receipts-' + 'a' * 209 + '-recovered.json'
                 (folder / 'publication_receipts.json').write_text(json.dumps(receipt(0)))
                 (folder / recovered).write_text(json.dumps(receipt(1000)))
-                (folder / '.rcpt-stopped.part').write_text('left by a commit stopped hard')
+                (folder / '.rcpt-ab_12cd3.part').write_text('left by a commit stopped hard')
+                (folder / '.rcpt-review-notes.part').write_text('ordinary review notes')
                 try:
                     for name in ('publication_receipts.json.part', 'publication_receipts-2.json.part'):
                         os.symlink(sentinel, folder / name)
@@ -302,6 +303,8 @@ public sealed class ReviewdPreparedContextTests
                                         for c in json.loads(p.read_text())['comments']) == list(range(1000, 1150)),
                     'largest': max(p.stat().st_size for p in folder.iterdir() if not p.is_symlink()),
                     'staging': sorted(p.name for p in folder.iterdir() if p.name.startswith('.rcpt-')),
+                    'notes': (folder / '.rcpt-review-notes.part').read_text()
+                             if (folder / '.rcpt-review-notes.part').exists() else None,
                 }))
                 """;
 
@@ -316,7 +319,12 @@ public sealed class ReviewdPreparedContextTests
         result["ours"]!.GetValue<bool>().Should().BeTrue("the receipt reads back with every comment");
         result["recovered"]!.GetValue<bool>().Should().BeTrue("the recovered receipt keeps every comment");
         result["largest"]!.GetValue<int>().Should().BeLessThanOrEqualTo(64 * 1024);
-        result["staging"]!.AsArray().Should().BeEmpty("no staging file is left to be archived");
+        result["staging"]!
+            .AsArray()
+            .Select(node => node!.GetValue<string>())
+            .Should()
+            .Equal([".rcpt-review-notes.part"], "the sweep removes only a name the receipt writer generates");
+        result["notes"]!.GetValue<string>().Should().Be("ordinary review notes");
     }
 
     [SkippableTheory]

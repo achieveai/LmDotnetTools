@@ -1,5 +1,6 @@
 """Executed only through Gateway; uses the installed review-setup helpers."""
 import atexit
+import datetime
 import hashlib
 import json
 import os
@@ -239,10 +240,16 @@ def eligibility():
 def live_merge(current, args):
     # The merge this step works on. A finished review (the runner sets reviewFinished once the review turn is over)
     # stays pinned to the head and merge it reviewed: a target branch that moved, or a new push, does not stop its
-    # confirmation, verify or archive (Kay9: post the findings on the update reviewed; a new head is reviewed afresh).
-    if current['status'] != 'active' or current['isDraft'] is not False:
+    # confirmation, verify or archive. A closed PR can still receive a conversation summary for that revision.
+    finished = args.get('reviewFinished')
+    open_for_review = current['status'] == 'active' and current['isDraft'] is False
+    closed = current['status'] in ('completed', 'abandoned')
+    closed_after_review = finished and closed
+    if not (open_for_review or closed_after_review):
+        if closed:
+            raise ReviewError('PR_CLOSED: PR is not active in the requested repository.')
         raise ReviewError('PR is not active/non-draft in the requested repository.')
-    if args.get('reviewFinished'):
+    if finished:
         merge = args.get('merge')
         if not isinstance(merge, str) or len(merge) != 40:
             raise ReviewError('A finished review has no prepared merge to stay on.')
@@ -291,7 +298,25 @@ def same_text(posted, recorded):
     return isinstance(posted, str) and posted.replace('\r\n', '\n') == recorded.replace('\r\n', '\n')
 
 
-def github_verify(comments, read, baseline):
+def summary_head_matches(content, posted_at, closed_at, head):
+    # Provider timestamps decide whether this summary was posted after closure. Equal timestamps can be
+    # ambiguous at second resolution. Earlier summaries still follow the open-PR publication contract.
+    if not isinstance(posted_at, str) or not isinstance(closed_at, str):
+        return True
+    try:
+        # ADO can supply seven fractional digits. Use a width Python 3.10 accepts.
+        def parse(value):
+            iso = re.sub(r'\.(\d+)', lambda match: '.' + match[1][:6].ljust(6, '0'), value)
+            return datetime.datetime.fromisoformat(iso.replace('Z', '+00:00'))
+
+        late = parse(posted_at) > parse(closed_at)
+    except (TypeError, ValueError):
+        return True
+    return not late or re.search(
+        rf'\bReviewed commit\s+`?{re.escape(head)}(?![0-9a-f])', content, re.IGNORECASE) is not None
+
+
+def github_verify(comments, read, baseline, closed_at=None, head=None, merged=False):
     # A GitHub summary is a top-level PR comment or a review body. Each round posts its own, so there is no
     # reply-in-thread summary to recognise. Returns the verified entries; raises when any cannot be verified.
     verified, seen, summarized, wrappers, holders = [], set(), False, [], set()
@@ -310,8 +335,16 @@ def github_verify(comments, read, baseline):
                 or not same_text(posted.get('body'), content)):
             raise ReviewError('Publication could not be independently verified.')
         if kind == 'review_comment':
+            # A top-level inline finding is anchored to its original commit. GitHub can move its
+            # display position as the PR changes. A reply inherits its existing thread's anchor.
+            if merged and not posted.get('in_reply_to_id') and posted.get('original_commit_id') != head:
+                raise ReviewError('An inline finding on a merged PR must be anchored to the reviewed head.')
             holders.add(posted.get('pull_request_review_id'))
-        summarized = summarized or (comment.get('kind') == 'summary' and kind in ('issue_comment', 'review'))
+        if comment.get('kind') == 'summary' and kind in ('issue_comment', 'review'):
+            if closed_at is not None and not summary_head_matches(
+                    content, posted.get('created_at') or posted.get('submitted_at'), closed_at, head):
+                raise ReviewError('A summary posted after PR closure must name the full reviewed head.')
+            summarized = True
         verified.append({'commentType': kind, 'commentId': comment_id, 'kind': comment.get('kind'),
                          'contentSha256': hashlib.sha256(content.encode()).hexdigest()})
     if not summarized:
@@ -321,6 +354,36 @@ def github_verify(comments, read, baseline):
     # inline comment). Without this a lost inline comment passed verify on its empty wrapper alone (#910).
     if any(type(wrapper) is not int or wrapper not in holders for wrapper in wrappers):
         raise ReviewError('An empty review wrapper has no verified review comment of its own in the receipt.')
+    return verified
+
+
+def ado_verify(comments, read_thread, baseline, summary_threads, closed_at, head):
+    verified, seen, summarized = [], set(), False
+    for comment in comments:
+        thread_id, comment_id = comment.get('threadId'), comment.get('commentId')
+        if (type(thread_id) is not int or thread_id <= 0 or type(comment_id) is not int or comment_id <= 0
+                or (thread_id, comment_id) in seen or [thread_id, comment_id] in baseline):
+            raise ReviewError('Publication IDs invalid, duplicated, or already present before this review.')
+        seen.add((thread_id, comment_id))
+        thread = read_thread(thread_id)
+        posted = next((c for c in thread.get('comments', []) if c.get('id') == comment_id), None)
+        if (thread.get('id') != thread_id or thread.get('isDeleted') or posted is None
+                or posted.get('isDeleted') or posted.get('content') != comment.get('content')
+                or not isinstance(comment.get('content'), str) or not comment['content'].strip()):
+            raise ReviewError('Publication could not be independently verified.')
+        kind = comment.get('kind')
+        if kind == 'summary':
+            if not summary_head_matches(posted['content'], posted.get('publishedDate'), closed_at, head):
+                raise ReviewError('A summary posted after PR closure must name the full reviewed head.')
+            summarized = True
+        elif kind == 'reply' and not summarized and summary_reply(thread, posted, summary_threads):
+            # A reply in an earlier summary thread can count as this round's summary. An additional reply
+            # can be a correction, so lacking the full head only disqualifies it as the summary candidate.
+            summarized = summary_head_matches(posted['content'], posted.get('publishedDate'), closed_at, head)
+        verified.append({'threadId': thread_id, 'commentId': comment_id, 'kind': kind,
+                         'contentSha256': hashlib.sha256(posted['content'].encode()).hexdigest()})
+    if not summarized:
+        raise ReviewError('Publication receipt must include a posted summary.')
     return verified
 
 
@@ -648,6 +711,73 @@ def stamp_receipt(read, pr_id, head, merge):
     return read_receipt(lambda name: json.dumps({**json.loads(read(name)), **revision}))
 
 
+def recorded_summary_correction(comments, path, head):
+    # The publisher saves the intended edit before PATCH. Readback decides whether it landed even if
+    # the original receipt was never updated. A rejected edit cannot verify as the previous approval.
+    if not path.exists():
+        return None
+    change = json.loads(path.read_text())
+    if not isinstance(change, dict) or str(change.get('prId')) != str(pr) or change.get('headSha') != head:
+        raise ReviewError('Publication summary correction does not identify the prepared PR revision.')
+    old, intended = change.get('oldContent'), change.get('content')
+    if (not isinstance(old, str) or not isinstance(intended, str)
+            or not intended.strip() or same_text(old, intended)):
+        raise ReviewError('Publication summary correction must record its old and intended content.')
+    keys = ('commentType', 'commentId') if github else ('threadId', 'commentId')
+    matches = [c for c in comments if c.get('kind') == 'summary'
+               and all(key in change and c.get(key) == change[key] for key in keys)]
+    if len(matches) != 1 or not any(same_text(matches[0].get('content'), body) for body in (old, intended)):
+        raise ReviewError('Publication summary correction does not match this review summary.')
+    return matches[0], {**matches[0], 'content': intended}
+
+
+def publication_comments(folder, head, merge, *, materialize=False):
+    parts = {}
+
+    def read(name):
+        text = safe_path(folder, name).read_text()
+        if materialize:
+            parts[name] = json.loads(text)
+        return text
+
+    comments = stamp_receipt(read, pr, head, merge).get('comments')
+    if not isinstance(comments, list) or not comments:
+        raise ReviewError('Publication receipt must include a posted summary.')
+    correction = recorded_summary_correction(comments, safe_path(folder, 'publication-summary-correction.json'), head)
+    if correction is None:
+        return comments
+    old, intended = correction
+    if materialize and old != intended:
+        # The runner verified the intended edit before committing. Preserve it in the canonical
+        # receipt even if the publisher was interrupted. Leave every other receipt field intact.
+        for name, part in parts.items():
+            if old in part['comments']:
+                part['comments'][part['comments'].index(old)] = intended
+                replace_file(folder, name, json.dumps(part) + '\n')
+                break
+    return [intended if comment is old else comment for comment in comments]
+
+
+def merged_follow_up(folder, head):
+    # Do not let missing or malformed model-written evidence prevent the verified review from releasing.
+    try:
+        with safe_path(folder, 'merged-follow-up.json').open() as stream:
+            result = json.loads(stream.read(4096))
+    except FileNotFoundError:
+        return {'status': 'unrecorded'}
+    except (OSError, ValueError, ReviewError):
+        return {'status': 'invalid'}
+    if not isinstance(result, dict) or result.get('marker') != f'Reviewd source: PR #{pr}, reviewed head {head}':
+        return {'status': 'invalid'}
+    status = result.get('status')
+    if status in ('not-needed', 'pending', 'denied', 'deferred', 'failed'):
+        return {'status': status}
+    identifier = result.get('issueId')
+    if status in ('created', 'reused') and type(identifier) is int and identifier > 0:
+        return {'status': status, 'issueId': identifier}
+    return {'status': 'invalid'}
+
+
 def replace_file(folder, name, text):
     # Replaces folder/name whole with text. The staging file is created new in the folder, never opened by a name that
     # may already hold a file or a link, so nothing outside the folder is written through. Its short fixed prefix fits
@@ -672,6 +802,9 @@ def keep_receipts_under_limit(folder):
     # stopped hard can leave a staging file, which is no part of the review, so it goes first. Returns
     # [(receipt name, files kept as)].
     for leftover in folder.glob(f'{STAGING_PREFIX}*.part'):
+        # CPython mkstemp adds eight lowercase letters, digits or underscores to the prefix.
+        if not re.fullmatch(rf'{re.escape(STAGING_PREFIX)}[a-z0-9_]{{8}}[.]part', leftover.name):
+            continue
         if not leftover.is_dir() or leftover.is_symlink():
             leftover.unlink()
     kept = []
@@ -936,37 +1069,24 @@ elif phase == 'verify' and args.get('shadow'):
                                        args['head'], args['merge'])))
 elif phase == 'verify':
     inspect_prepared()
-    receipt = stamp_receipt(lambda name: safe_path(outer, f'{directory}/{name}').read_text(), pr, args['head'],
-                            args['merge'])
-    comments = receipt.get('comments')
-    if not isinstance(comments, list) or not comments:
-        raise ReviewError('Publication receipt must include a posted summary.')
+    folder = safe_path(outer, directory)
+    comments = publication_comments(folder, args['head'], args['merge'])
     payload, _ = live()
     if github:
-        print(json.dumps({'comments': github_verify(comments, client.request, args['baselineComments'])}))
-        sys.exit(0)
-    api = ado_pr_api(payload)
-    verified, seen, summarized = [], set(), False
-    summary_threads = set(args.get('summaryThreads') or [])
-    for comment in comments:
-        thread_id, comment_id = comment.get('threadId'), comment.get('commentId')
-        if (type(thread_id) is not int or thread_id <= 0 or type(comment_id) is not int or comment_id <= 0
-                or (thread_id, comment_id) in seen or [thread_id, comment_id] in args['baselineComments']):
-            raise ReviewError('Publication IDs invalid, duplicated, or already present before this review.')
-        seen.add((thread_id, comment_id))
-        thread = transport.request('GET', api + f'/threads/{thread_id}?api-version=7.1')
-        posted = next((c for c in thread.get('comments', []) if c.get('id') == comment_id), None)
-        if (thread.get('id') != thread_id or thread.get('isDeleted') or posted is None
-                or posted.get('isDeleted') or posted.get('content') != comment.get('content')
-                or not isinstance(comment.get('content'), str) or not comment['content'].strip()):
-            raise ReviewError('Publication could not be independently verified.')
-        summarized = summarized or comment.get('kind') == 'summary' or (
-            comment.get('kind') == 'reply' and summary_reply(thread, posted, summary_threads))
-        verified.append({'threadId': thread_id, 'commentId': comment_id, 'kind': comment.get('kind'),
-                         'contentSha256': hashlib.sha256(posted['content'].encode()).hexdigest()})
-    if not summarized:
-        raise ReviewError('Publication receipt must include a posted summary.')
-    print(json.dumps({'comments': verified}))
+        closed_at = payload.get('closed_at') if payload.get('state') == 'closed' else None
+        merged = payload.get('merged') is True
+        verified = github_verify(comments, client.request, args['baselineComments'], closed_at, args['head'], merged)
+    else:
+        api = ado_pr_api(payload)
+        summary_threads = set(args.get('summaryThreads') or [])
+        closed_at = payload.get('closedDate') if payload.get('status') in ('completed', 'abandoned') else None
+        merged = payload.get('status') == 'completed'
+        verified = ado_verify(comments, lambda tid: transport.request('GET', api + f'/threads/{tid}?api-version=7.1'),
+                              args['baselineComments'], summary_threads, closed_at, args['head'])
+    result = {'comments': verified}
+    if merged:
+        result['mergedFollowUp'] = merged_follow_up(folder, args['head'])
+    print(json.dumps(result))
 elif phase == 'commit':
     inspect_prepared()
     clear_stale_index_locks()
@@ -975,6 +1095,8 @@ elif phase == 'commit':
     # part, so the finished review could never commit. Move the whole nested repository out, not just its .git:
     # its working tree may be a clone of the source, and commit_review adds everything left in the folder.
     folder = safe_path(outer, directory)
+    if not args.get('shadow') and safe_path(folder, 'publication-summary-correction.json').exists():
+        publication_comments(folder, args['head'], args['merge'], materialize=True)
     quarantine = Path('/tmp/review-quarantine') / f"{repo_slug(repo)}-{pr}-{args['head'][:8]}"
     for current, dirs, files in os.walk(folder):
         if '.git' not in dirs + files:

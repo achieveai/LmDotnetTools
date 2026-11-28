@@ -9,6 +9,7 @@ using AchieveAi.LmDotnetTools.LmTestUtils.Logging;
 using AchieveAi.LmDotnetTools.LmTestUtils.Persistence;
 using LmStreaming.Sample.SandboxApps;
 using LmStreaming.Sample.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -1323,12 +1324,150 @@ public sealed class DedicatedSandboxCompositionTests : LoggingTestBase
         OwnSessionId(fixture, a).Should().Be(session);
     }
 
-    /// <summary>Steps <paramref name="clock"/> until <paramref name="response"/> answers.</summary>
-    private static async Task<HttpResponseMessage> AdvanceUntilAsync(
-        FakeTimeProvider clock,
-        Task<HttpResponseMessage> response,
-        TimeSpan step
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task A_committed_conversation_delete_finishes_after_cancellation_or_timeout(
+        bool callerCancels,
+        bool hasFork
     )
+    {
+        const string TrackingPersistedSandbox =
+            "Deleting sandbox session {SessionId} of owner {OwnerThreadId} that this host no longer tracked (retired: {Retired})";
+        const string CommittedWaitEnded =
+            "The delete of conversation {ThreadId} committed as its wait ended; deleting the conversation";
+        const string ParentMessage = "Keep this message available to the fork";
+        var root = FakeGatewayWebAppFactory.NewRoot();
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var gateway = new OwnedSandboxGateway();
+        var committed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseRead = new ManualResetEventSlim();
+        try
+        {
+            string parent;
+            string workspace;
+            string? fork = null;
+            await using (
+                var fixture = await StartAsync(
+                    root: root,
+                    gateway: gateway,
+                    timeProvider: clock,
+                    configureServices: services =>
+                    {
+                        _ = services.AddSingleton<TimeProvider>(clock);
+                        _ = HostLogCapture.Install(
+                            services,
+                            entry =>
+                            {
+                                if (entry.MessageTemplate.Text == TrackingPersistedSandbox)
+                                {
+                                    // The registry has committed. Hold its Read signal so cancellation or timeout wins the wait.
+                                    _ = committed.TrySetResult();
+                                    _ = releaseRead.Wait(Patience + Patience);
+                                }
+                            }
+                        );
+                    }
+                )
+            )
+            {
+                workspace = fixture.WorkspaceId;
+                parent = await fixture.ProvisionAsync("PRs/r-7");
+                _ = fixture.BuildAgent(parent);
+                var session = gateway.Creates.Single().SessionId;
+                if (hasFork)
+                {
+                    await fixture.Store.AppendMessagesAsync(
+                        parent,
+                        [
+                            MessagePersistenceConverter.ToPersistedMessage(
+                                new TextMessage { Role = Role.User, Text = ParentMessage },
+                                parent,
+                                "run-1"
+                            ),
+                        ]
+                    );
+                    using var forkResponse = await fixture.Client.PostAsJsonAsync(
+                        $"/api/conversations/{parent}/fork",
+                        new ForkConversationRequest { AfterRunId = "run-1" }
+                    );
+                    forkResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+                    fork = (await forkResponse.Content.ReadFromJsonAsync<ForkConversationResponse>())!.ThreadId;
+                }
+
+                using (var retired = await fixture.ReleaseAsync(parent, directory: null))
+                {
+                    retired.StatusCode.Should().Be(HttpStatusCode.OK);
+                }
+
+                gateway.DeleteAttempts.Should().Be(0, "retiring leaves the sandbox for the conversation delete");
+
+                // Invoke the real route action so the test can await its outcome even after the request token cancels.
+                await using var scope = fixture.Services.CreateAsyncScope();
+                var controller = ActivatorUtilities.CreateInstance<ConversationsController>(scope.ServiceProvider);
+                controller.ControllerContext = new ControllerContext
+                {
+                    HttpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider },
+                };
+                using var caller = new CancellationTokenSource();
+                var waitEnded = fixture.Logs.WaitForAsync(CommittedWaitEnded, parent, Patience);
+                var delete = controller.Delete(parent, caller.Token);
+                try
+                {
+                    await committed.Task.WaitAsync(Patience);
+                    if (callerCancels)
+                    {
+                        await caller.CancelAsync();
+                        _ = await waitEnded;
+                    }
+                    else
+                    {
+                        _ = await AdvanceUntilAsync(clock, waitEnded, TimeSpan.FromSeconds(31));
+                    }
+                }
+                finally
+                {
+                    releaseRead.Set();
+                }
+
+                (await delete.WaitAsync(Patience)).Should().BeOfType<NoContentResult>();
+                (await gateway.NextDeleteAsync()).Should().Be(session);
+            }
+
+            await using var restarted = await StartAsync(root: root, workspaceId: workspace, gateway: gateway);
+            var metadata = await restarted.Store.LoadMetadataAsync(parent);
+            if (fork is null)
+            {
+                metadata.Should().BeNull("a conversation with no forks is removed");
+            }
+            else
+            {
+                ConversationLineage
+                    .IsDeleted(metadata)
+                    .Should()
+                    .BeTrue("the original stays hidden so its fork can read it");
+                using var inherited = await restarted.Client.GetAsync($"/api/conversations/{fork}/messages");
+                inherited.StatusCode.Should().Be(HttpStatusCode.OK);
+                (await inherited.Content.ReadAsStringAsync()).Should().Contain(ParentMessage);
+            }
+
+            using var resume = await restarted.Client.PostAsJsonAsync(
+                $"/api/conversations/{parent}/messages",
+                new SendMessageRequest { Text = "Try to resume the deleted conversation" }
+            );
+            resume.StatusCode.Should().Be(HttpStatusCode.NotFound);
+            gateway.Creates.Should().ContainSingle("the send cannot recreate a sandbox for the deleted thread");
+        }
+        finally
+        {
+            DetachedStoreTeardown.Purge(root);
+        }
+    }
+
+    /// <summary>Steps <paramref name="clock"/> until <paramref name="response"/> answers.</summary>
+    private static async Task<T> AdvanceUntilAsync<T>(FakeTimeProvider clock, Task<T> response, TimeSpan step)
     {
         var deadline = DateTime.UtcNow + Patience;
         while (!response.IsCompleted && DateTime.UtcNow < deadline)
